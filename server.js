@@ -44,23 +44,36 @@ app.get('/scrape-247', async (req, res) => {
     console.log(`Starting scrape for ${classYear}...`);
 
     // Launch browser with @sparticuz/chromium
+    const executablePath = await chromium.executablePath();
+    console.log('Chromium executable path:', executablePath);
+
     browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process'
+      ],
+      defaultViewport: { width: 1920, height: 1080 },
+      executablePath: executablePath,
+      headless: true
     });
 
     const page = await browser.newPage();
 
-    // Set viewport and user agent
-    await page.setViewport({ width: 1920, height: 1080 });
+    // Set user agent to look like a real browser
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     const url = `https://247sports.com/college/ohio-state/season/${classYear}-football/offers/`;
     console.log(`Navigating to ${url}`);
 
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    console.log('Page loaded, waiting for content...');
+
+    // Wait a bit for JS to initialize
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Scroll down to load all lazy-loaded content
     console.log('Scrolling to load all content...');
