@@ -75,12 +75,63 @@ app.get('/scrape-247', async (req, res) => {
     // Wait a bit for JS to initialize
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Scroll down to load all lazy-loaded content
-    console.log('Scrolling to load all content...');
+    // Check how many players we have initially
+    let playerCount = await page.evaluate(() => document.querySelectorAll('a[href*="/Player/"]').length);
+    console.log(`Initial player links found: ${playerCount}`);
+
+    // Try to find and click "Load More" or similar buttons
+    const loadMoreSelectors = [
+      'button:contains("Load More")',
+      'a:contains("Load More")',
+      '.load-more',
+      '[class*="load-more"]',
+      '[class*="show-more"]',
+      'button:contains("Show More")',
+      '.pagination a',
+      'a[class*="next"]'
+    ];
+
+    // Click load more buttons multiple times
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const clicked = await page.evaluate(() => {
+        // Look for any clickable element with "load more", "show more", "view more"
+        const buttons = Array.from(document.querySelectorAll('button, a, div[onclick]'));
+        for (const btn of buttons) {
+          const text = btn.textContent.toLowerCase();
+          if (text.includes('load more') || text.includes('show more') || text.includes('view more') || text.includes('see more')) {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+
+      if (clicked) {
+        console.log(`Clicked load more button (attempt ${attempt + 1})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } else {
+        // No button found, try scrolling
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // Check if we got more players
+      const newCount = await page.evaluate(() => document.querySelectorAll('a[href*="/Player/"]').length);
+      if (newCount > playerCount) {
+        console.log(`Player count increased: ${playerCount} -> ${newCount}`);
+        playerCount = newCount;
+      }
+    }
+
+    // Final scroll sequence
+    console.log('Running final scroll sequence...');
     await autoScroll(page);
 
     // Wait for content to settle
     await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const finalCount = await page.evaluate(() => document.querySelectorAll('a[href*="/Player/"]').length);
+    console.log(`Final player links found: ${finalCount}`);
 
     // Extract player data
     console.log('Extracting player data...');
