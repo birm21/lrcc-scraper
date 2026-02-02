@@ -259,30 +259,40 @@ app.get('/scrape-247', async (req, res) => {
   }
 });
 
-// Helper function to scroll page
+// Helper function to scroll page and trigger lazy loading
 async function autoScroll(page) {
-  await page.evaluate(async () => {
-    await new Promise((resolve) => {
-      let totalHeight = 0;
-      const distance = 500;
-      const maxScrolls = 100; // Safety limit
-      let scrollCount = 0;
+  let previousHeight = 0;
+  let scrollAttempts = 0;
+  const maxAttempts = 30;
 
-      const timer = setInterval(() => {
-        const scrollHeight = document.body.scrollHeight;
-        window.scrollBy(0, distance);
-        totalHeight += distance;
-        scrollCount++;
+  while (scrollAttempts < maxAttempts) {
+    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
 
-        if (totalHeight >= scrollHeight || scrollCount >= maxScrolls) {
-          clearInterval(timer);
-          // Scroll back to top
-          window.scrollTo(0, 0);
-          resolve();
-        }
-      }, 150);
-    });
-  });
+    // Scroll to bottom
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+
+    // Wait for content to potentially load
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Check if new content loaded
+    const newHeight = await page.evaluate(() => document.body.scrollHeight);
+
+    if (newHeight === previousHeight) {
+      // No new content, try a few more times then stop
+      scrollAttempts++;
+      if (scrollAttempts > 5) {
+        console.log(`No new content after ${scrollAttempts} attempts, stopping scroll`);
+        break;
+      }
+    } else {
+      scrollAttempts = 0; // Reset counter when new content loads
+      previousHeight = newHeight;
+      console.log(`Scrolled, new height: ${newHeight}`);
+    }
+  }
+
+  // Scroll back to top
+  await page.evaluate(() => window.scrollTo(0, 0));
 }
 
 app.listen(PORT, () => {
