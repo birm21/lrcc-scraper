@@ -887,9 +887,16 @@ app.get('/scrape-on3-alerts', async (req, res) => {
       console.log(`Processing alert ${i + 1}/${alertsToProcess.length}: ${alert.postUrl}`);
 
       try {
-        // Navigate to the actual post - use faster settings
-        await page.goto(alert.postUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await new Promise(resolve => setTimeout(resolve, 800));
+        // Navigate to the actual post
+        // /boards/posts/ URLs may redirect to /boards/threads/ - wait for networkidle
+        const isPostsUrl = alert.postUrl.includes('/boards/posts/');
+        await page.goto(alert.postUrl, {
+          waitUntil: isPostsUrl ? 'networkidle2' : 'domcontentloaded',
+          timeout: 20000
+        });
+
+        // Wait longer for /posts/ URLs since they might redirect
+        await new Promise(resolve => setTimeout(resolve, isPostsUrl ? 2000 : 800));
 
         // Log the actual URL we landed on (may differ from postUrl due to redirects)
         const finalUrl = page.url();
@@ -952,13 +959,42 @@ app.get('/scrape-on3-alerts', async (req, res) => {
             }
           }
 
-          // Strategy 2: Look for highlighted/targeted post
+          // Strategy 2: For /boards/posts/xxx/ URLs, extract post ID and find it
+          if (!postEl) {
+            const postsMatch = window.location.pathname.match(/\/boards\/posts\/(\d+)/);
+            if (postsMatch) {
+              const postId = postsMatch[1];
+              debug.postsUrlId = postId;
+
+              // Look for article with this post ID in various attributes
+              postEl = document.querySelector(`article[data-content="post-${postId}"]`)
+                    || document.querySelector(`[data-content="post-${postId}"]`)
+                    || document.querySelector(`#js-post-${postId}`)
+                    || document.querySelector(`#post-${postId}`)?.closest('article');
+
+              if (!postEl) {
+                // Try finding anchor then article (same as hash method)
+                const anchor = document.getElementById(`post-${postId}`) || document.getElementById(`js-post-${postId}`);
+                if (anchor) {
+                  postEl = anchor.closest('article[data-author], article.message, .message--post')
+                        || anchor.nextElementSibling?.closest('article[data-author], article.message')
+                        || anchor.parentElement?.closest('article[data-author], article.message');
+                }
+              }
+
+              if (postEl) {
+                debug.foundMethod = 'posts URL -> article: ' + postId;
+              }
+            }
+          }
+
+          // Strategy 3: Look for highlighted/targeted post
           if (!postEl) {
             postEl = document.querySelector('.message--post.is-highlighted, article.message.is-highlighted, [data-highlight="true"]');
             if (postEl) debug.foundMethod = 'highlighted class';
           }
 
-          // Strategy 3: On3/XenForo specific - article with data-author
+          // Strategy 4: On3/XenForo specific - article with data-author
           if (!postEl) {
             const articles = document.querySelectorAll('article[data-author], article.message');
             if (articles.length === 1) {
