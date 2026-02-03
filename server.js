@@ -692,6 +692,7 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     const alertList = await page.evaluate(() => {
       const items = [];
       const seenUrls = new Set();
+      const debugLog = []; // Capture debug info for each alert
 
       // XenForo alert structure: li.alert.js-alert.block-row elements
       const alertElements = document.querySelectorAll('li.alert, li.js-alert, li.block-row');
@@ -709,65 +710,105 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         // Must contain quoted or mentioned
         if (!text.toLowerCase().includes('quoted') && !text.toLowerCase().includes('mentioned')) return;
 
+        // Start debug entry for this alert
+        const alertDebug = {
+          idx,
+          textPreview: text.substring(0, 100),
+          allLinks: [],
+          dataAttrs: {},
+          urlSelectionSteps: [],
+          outerHtmlPreview: alertEl.outerHTML?.substring(0, 500)
+        };
+
+        // Capture all data attributes
+        for (const attr of alertEl.attributes || []) {
+          if (attr.name.startsWith('data-')) {
+            alertDebug.dataAttrs[attr.name] = attr.value;
+          }
+        }
+
+        // Capture ALL links in this alert for debugging
+        const allLinksInAlert = alertEl.querySelectorAll('a[href]');
+        allLinksInAlert.forEach(link => {
+          alertDebug.allLinks.push({
+            href: link.href,
+            text: link.textContent?.trim()?.substring(0, 50),
+            class: link.className
+          });
+        });
+
         // Determine type
         const type = text.toLowerCase().includes('mentioned') ? 'mention' : 'quote';
 
         // Extract author and thread title from text using regex
-        // Pattern: "Username quoted your post in the thread [Category] Thread Title."
-        // Category might be "Football", "Basketball", etc. (shown as badge)
-        const fullMatch = text.match(/([A-Za-z0-9_]+)\s+(quoted|mentioned).*?in the thread\s+(?:Football\s+|Basketball\s+|Baseball\s+|Other\s+)?(.+?)(?:\.\s*$|\.\s*(?:\d+\s+\w+\s+ago|Today|Yesterday))/is);
+        const fullMatch = text.match(/([A-Za-z0-9_\s]+?)\s+(quoted|mentioned).*?in the thread\s+(?:Football\s+|Basketball\s+|Baseball\s+|Other\s+)?(.+?)(?:\.\s*$|\.\s*(?:\d+\s+\w+\s+ago|Today|Yesterday))/is);
 
         let author = '';
         let threadTitle = '';
 
         if (fullMatch) {
-          author = fullMatch[1];
+          author = fullMatch[1].trim();
           threadTitle = fullMatch[3].trim();
         }
 
-        // Find post URL - XenForo alerts often have the URL on an inner link or the row itself
+        // Find post URL - try multiple strategies and log each step
         let postUrl = '';
 
-        // Check for data-href on the alert element itself
-        postUrl = alertEl.getAttribute('data-href') || alertEl.getAttribute('href') || '';
+        // Strategy 1: Check for data-href on the alert element itself
+        const dataHref = alertEl.getAttribute('data-href') || alertEl.getAttribute('href');
+        if (dataHref) {
+          postUrl = dataHref;
+          alertDebug.urlSelectionSteps.push({ step: 'data-href on element', url: dataHref });
+        }
 
-        // If not on element, look for links to posts/threads
+        // Strategy 2: Look for links containing /posts/ (specific post link)
         if (!postUrl) {
-          const links = alertEl.querySelectorAll('a[href]');
-          links.forEach(link => {
+          const postsLink = alertEl.querySelector('a[href*="/posts/"]');
+          if (postsLink) {
+            postUrl = postsLink.href;
+            alertDebug.urlSelectionSteps.push({ step: 'a[href*="/posts/"]', url: postsLink.href });
+          }
+        }
+
+        // Strategy 3: Look for links containing /threads/ with post anchor
+        if (!postUrl) {
+          const threadLinks = alertEl.querySelectorAll('a[href*="/threads/"]');
+          threadLinks.forEach(link => {
             const href = link.href || '';
-            // Skip member profile links
-            if (href.includes('/members/') || href.includes('/profile/')) return;
-            // Find post/thread links
-            if (href.includes('/posts/') || href.includes('/threads/') || href.includes('post-')) {
-              if (!postUrl) postUrl = href;
+            // Prefer links with post anchors like #post-12345
+            if (href.includes('#post-') || href.includes('post-')) {
+              if (!postUrl) {
+                postUrl = href;
+                alertDebug.urlSelectionSteps.push({ step: 'thread link with post anchor', url: href });
+              }
             }
           });
+          // If no anchored link, use first thread link
+          if (!postUrl && threadLinks.length > 0) {
+            postUrl = threadLinks[0].href;
+            alertDebug.urlSelectionSteps.push({ step: 'first thread link (no anchor)', url: threadLinks[0].href });
+          }
         }
 
-        // Check for contentRow-main link which often wraps the alert content
+        // Strategy 4: contentRow-main or contentRow-title link
         if (!postUrl) {
           const mainLink = alertEl.querySelector('.contentRow-main a[href], .contentRow-title a[href]');
-          if (mainLink) {
+          if (mainLink && !mainLink.href.includes('/members/')) {
             postUrl = mainLink.href;
+            alertDebug.urlSelectionSteps.push({ step: 'contentRow-main/title link', url: mainLink.href });
           }
         }
 
-        // If still no URL, check if the entire alert is wrapped in a link
+        // Strategy 5: Any non-member link as last resort
         if (!postUrl) {
-          const parentLink = alertEl.closest('a[href]');
-          if (parentLink) {
-            postUrl = parentLink.href;
-          }
-        }
-
-        // Fallback: use a constructed URL based on any link that's not a member link
-        if (!postUrl) {
-          const anyLink = alertEl.querySelector('a[href]:not([href*="/members/"])');
+          const anyLink = alertEl.querySelector('a[href]:not([href*="/members/"]):not([href*="/profile/"])');
           if (anyLink) {
             postUrl = anyLink.href;
+            alertDebug.urlSelectionSteps.push({ step: 'any non-member link', url: anyLink.href });
           }
         }
+
+        alertDebug.finalUrl = postUrl;
 
         // Extract timestamp
         const timeEl = alertEl.querySelector('time, .DateTime, [class*="time"]');
@@ -779,6 +820,9 @@ app.get('/scrape-on3-alerts', async (req, res) => {
           }
         }
 
+        // Add debug entry
+        debugLog.push(alertDebug);
+
         // Skip if we don't have a post URL (fall back to using alert index as unique ID)
         const alertKey = postUrl || `alert-${idx}`;
         if (!seenUrls.has(alertKey)) {
@@ -787,13 +831,16 @@ app.get('/scrape-on3-alerts', async (req, res) => {
             idx,
             type,
             author: author || 'Unknown',
-            postUrl: postUrl || '', // May be empty if no link found
+            postUrl: postUrl || '',
             threadTitle: threadTitle || 'Unknown Thread',
             timestamp,
             alertText: text.substring(0, 300)
           });
         }
       });
+
+      // Log debug info for first few alerts
+      console.log('ALERT DEBUG LOG:', JSON.stringify(debugLog.slice(0, 3), null, 2));
 
       // If no alerts found with li selector, try contentRow divs
       if (items.length === 0) {
@@ -844,25 +891,76 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         await page.goto(alert.postUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         await new Promise(resolve => setTimeout(resolve, 800));
 
-        // Extract the actual post content
-        const postData = await page.evaluate(() => {
-          // Try to find the highlighted/target post (usually has a class indicating it's the target)
-          let postEl = document.querySelector('.message--post[style*="background"], .message--post.is-highlighted, [id^="post-"].target, .bbWrapper');
+        // Log the actual URL we landed on (may differ from postUrl due to redirects)
+        const finalUrl = page.url();
+        console.log(`  Landed on: ${finalUrl}`);
 
-          // Fallback: find the last post on the page or the main content
-          if (!postEl) {
-            const allPosts = document.querySelectorAll('.message--post, .message-body, article[class*="message"]');
-            postEl = allPosts[allPosts.length - 1] || document.querySelector('.bbWrapper, .message-content');
+        // Extract the actual post content with detailed debugging
+        const postData = await page.evaluate(() => {
+          const debug = {
+            pageTitle: document.title,
+            currentUrl: window.location.href,
+            selectorsFound: {}
+          };
+
+          // Check what selectors match
+          debug.selectorsFound = {
+            'message--post': document.querySelectorAll('.message--post').length,
+            'message--post.is-highlighted': document.querySelectorAll('.message--post.is-highlighted').length,
+            'bbWrapper': document.querySelectorAll('.bbWrapper').length,
+            'message-body': document.querySelectorAll('.message-body').length,
+            'message-content': document.querySelectorAll('.message-content').length,
+            '[id^="post-"]': document.querySelectorAll('[id^="post-"]').length,
+            'blockquote': document.querySelectorAll('blockquote').length,
+            '.bbCodeBlock--quote': document.querySelectorAll('.bbCodeBlock--quote').length
+          };
+
+          // Try to find the highlighted/target post (usually has a class indicating it's the target)
+          let postEl = document.querySelector('.message--post[style*="background"], .message--post.is-highlighted, [id^="post-"].target');
+
+          // If URL has hash, try to find that specific post
+          const hash = window.location.hash;
+          if (hash && hash.startsWith('#post-')) {
+            const postId = hash.replace('#', '');
+            const targetPost = document.getElementById(postId);
+            if (targetPost) {
+              postEl = targetPost;
+              debug.foundByHash = postId;
+            }
           }
+
+          // Fallback: find the last post on the page
+          if (!postEl) {
+            const allPosts = document.querySelectorAll('.message--post, article[class*="message"]');
+            if (allPosts.length > 0) {
+              postEl = allPosts[allPosts.length - 1];
+              debug.usedFallback = 'last post on page';
+            }
+          }
+
+          // Another fallback: first bbWrapper
+          if (!postEl) {
+            postEl = document.querySelector('.bbWrapper, .message-content');
+            debug.usedFallback = 'first bbWrapper/message-content';
+          }
+
+          debug.postElFound = !!postEl;
+          debug.postElClass = postEl?.className || 'none';
+          debug.postElId = postEl?.id || 'none';
 
           // Get the message content
           let content = '';
-          const contentEl = postEl?.querySelector('.bbWrapper, .message-body, .message-content, [class*="content"]');
+          const contentEl = postEl?.querySelector('.bbWrapper, .message-body, .message-content');
           if (contentEl) {
             content = contentEl.textContent?.trim() || '';
+            debug.contentSource = 'inner content element';
           } else if (postEl) {
             content = postEl.textContent?.trim() || '';
+            debug.contentSource = 'postEl directly';
           }
+
+          debug.contentLength = content.length;
+          debug.contentPreview = content.substring(0, 100);
 
           // Try to find what was quoted (if this is a quote response)
           let quotedText = '';
@@ -871,23 +969,31 @@ app.get('/scrape-on3-alerts', async (req, res) => {
             quotedText = quoteBlock.textContent?.trim() || '';
             // Remove the quoted text from main content to avoid duplication
             content = content.replace(quotedText, '').trim();
+            debug.foundQuote = true;
+            debug.quoteLength = quotedText.length;
           }
 
           // Get thread title from page
           const threadTitle = document.querySelector('h1, .p-title-value, [class*="thread-title"]')?.textContent?.trim() || '';
 
-          // Get the post author
-          const authorEl = document.querySelector('.message-userDetails a, .username, [class*="author"]');
+          // Get the post author from this specific post
+          const authorEl = postEl?.querySelector('.message-userDetails a, .username, [class*="author"]')
+                        || document.querySelector('.message-userDetails a, .username');
           const postAuthor = authorEl?.textContent?.trim() || '';
+
+          console.log('POST EXTRACTION DEBUG:', JSON.stringify(debug, null, 2));
 
           return {
             content: content.substring(0, 2000),
             quotedText: quotedText.substring(0, 1000),
             threadTitle,
             postAuthor,
-            pageUrl: window.location.href
+            pageUrl: window.location.href,
+            debug // Include debug info in response
           };
         });
+
+        console.log(`  Content extracted: ${postData.content?.length || 0} chars, quote: ${postData.quotedText?.length || 0} chars`);
 
         alerts.push({
           id: `alert-${alert.idx}-${Date.now()}`,
