@@ -566,17 +566,12 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
     console.log('Login successful, navigating to alerts...');
 
-    // Try multiple possible alerts page URLs - On3 uses XenForo which has various URL patterns
+    // The correct On3 alerts URL (confirmed by user)
     const alertsUrls = [
+      'https://www.on3.com/boards/account/alerts',  // Primary - confirmed correct
+      'https://www.on3.com/boards/account/alerts/', // With trailing slash
       'https://www.on3.com/db/boards/account/alerts/',
-      'https://www.on3.com/db/account/alerts/',
-      'https://www.on3.com/boards/ohio-state-buckeyes/account/alerts/',
-      'https://www.on3.com/teams/ohio-state-buckeyes/boards/account/alerts/',
-      'https://www.on3.com/community/account/alerts/',
-      'https://www.on3.com/boards/account/alerts/',
-      'https://www.on3.com/account/alerts/',
-      'https://www.on3.com/db/alerts/',
-      'https://www.on3.com/alerts/'
+      'https://www.on3.com/account/alerts/'
     ];
 
     let alertsPageFound = false;
@@ -1007,15 +1002,10 @@ app.get('/debug-on3-alerts', async (req, res) => {
     });
     console.log('Available links after login:', JSON.stringify(availableLinks));
 
-    // Try multiple possible alerts page URLs
+    // The correct On3 alerts URL (confirmed by user)
     const alertsUrls = [
-      'https://www.on3.com/db/boards/account/alerts/',
-      'https://www.on3.com/db/account/alerts/',
-      'https://www.on3.com/boards/ohio-state-buckeyes/account/alerts/',
-      'https://www.on3.com/teams/ohio-state-buckeyes/boards/account/alerts/',
-      'https://www.on3.com/community/account/alerts/',
-      'https://www.on3.com/boards/account/alerts/',
-      'https://www.on3.com/account/alerts/'
+      'https://www.on3.com/boards/account/alerts',  // Primary - confirmed correct
+      'https://www.on3.com/boards/account/alerts/'  // With trailing slash
     ];
 
     const triedUrls = [];
