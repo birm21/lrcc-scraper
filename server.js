@@ -630,8 +630,8 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     console.log(`Found ${alertList.length} relevant alerts (mentions/quotes only)`);
 
     // Second pass: Visit each alert's post to get actual content
-    // Limit to 8 to avoid timeout (each page visit takes ~3-5 seconds)
-    const alertsToProcess = alertList.slice(0, 8);
+    // Limit to 5 to avoid timeout (each page visit takes ~3-5 seconds)
+    const alertsToProcess = alertList.slice(0, 5);
     const alerts = [];
 
     for (let i = 0; i < alertsToProcess.length; i++) {
@@ -639,9 +639,9 @@ app.get('/scrape-on3-alerts', async (req, res) => {
       console.log(`Processing alert ${i + 1}/${alertsToProcess.length}: ${alert.postUrl}`);
 
       try {
-        // Navigate to the actual post
-        await page.goto(alert.postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        // Navigate to the actual post - use faster settings
+        await page.goto(alert.postUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await new Promise(resolve => setTimeout(resolve, 800));
 
         // Extract the actual post content
         const postData = await page.evaluate(() => {
