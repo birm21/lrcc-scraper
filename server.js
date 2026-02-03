@@ -1179,8 +1179,9 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
         // Clean up author - remove whitespace/newlines from avatar elements
         let cleanAuthor = (alert.author || postData.postAuthor || '').replace(/[\n\t\r]+/g, ' ').replace(/\s+/g, ' ').trim();
-        // Remove avatar initials (single letter or number) if present at start
-        cleanAuthor = cleanAuthor.replace(/^[A-Z0-9]\s+/i, '');
+        // Remove avatar initials (single char/number at start followed by space, or any leading single char before a digit-starting username)
+        cleanAuthor = cleanAuthor.replace(/^[A-Za-z0-9]\s+(?=\d)/, ''); // "3 350zjk" -> "350zjk"
+        cleanAuthor = cleanAuthor.replace(/^[A-Za-z0-9]\s+(?=[A-Za-z])/, ''); // "J JohnDoe" -> "JohnDoe"
 
         alerts.push({
           id: `alert-${alert.idx}-${Date.now()}`,
@@ -1197,7 +1198,8 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         console.log(`Error processing alert ${i + 1}: ${err.message}`);
         // Clean author for fallback case too
         let fallbackAuthor = (alert.author || '').replace(/[\n\t\r]+/g, ' ').replace(/\s+/g, ' ').trim();
-        fallbackAuthor = fallbackAuthor.replace(/^[A-Z0-9]\s+/i, '');
+        fallbackAuthor = fallbackAuthor.replace(/^[A-Za-z0-9]\s+(?=\d)/, '');
+        fallbackAuthor = fallbackAuthor.replace(/^[A-Za-z0-9]\s+(?=[A-Za-z])/, '');
         // Still add the alert with basic info
         alerts.push({
           id: `alert-${alert.idx}-${Date.now()}`,
