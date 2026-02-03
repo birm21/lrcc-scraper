@@ -566,8 +566,16 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
     console.log('Login successful, navigating to alerts...');
 
-    // Navigate to alerts page
-    await page.goto('https://www.on3.com/boards/account/alerts', { waitUntil: 'networkidle2', timeout: 60000 });
+    // Navigate to alerts page - try the direct alerts URL first
+    // Use domcontentloaded for faster loading
+    try {
+      await page.goto('https://www.on3.com/account/alerts/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (navErr) {
+      console.log('First alerts URL failed, trying alternate...');
+      await page.goto('https://www.on3.com/boards/account/alerts/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    }
+
+    console.log('Alerts page URL:', page.url());
 
     // Wait for alerts to load
     await new Promise(resolve => setTimeout(resolve, 2000));
