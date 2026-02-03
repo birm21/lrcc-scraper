@@ -690,113 +690,97 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     });
     console.log('Page debug info:', JSON.stringify(pageDebug, null, 2));
 
-    // First pass: Extract alert metadata and URLs using multiple strategies
+    // First pass: Extract alert metadata and URLs using XenForo alert structure
     console.log('Extracting alert list...');
     const alertList = await page.evaluate(() => {
       const items = [];
       const seenUrls = new Set();
 
-      // Strategy 1: Find any element containing "quoted" or "mentioned" text
-      const walker = document.createTreeWalker(
-        document.body,
-        NodeFilter.SHOW_TEXT,
-        {
-          acceptNode: (node) => {
-            const text = node.textContent?.toLowerCase() || '';
-            if (text.includes('quoted your post') || text.includes('mentioned you')) {
-              return NodeFilter.FILTER_ACCEPT;
-            }
-            return NodeFilter.FILTER_SKIP;
-          }
-        }
-      );
+      // XenForo alert structure: li.alert.js-alert.block-row elements
+      const alertElements = document.querySelectorAll('li.alert, li.js-alert, li.block-row');
+      console.log('Found alert li elements:', alertElements.length);
 
-      const textNodes = [];
-      while (walker.nextNode()) {
-        textNodes.push(walker.currentNode);
-      }
+      alertElements.forEach((alertEl, idx) => {
+        const text = alertEl.textContent?.trim() || '';
+        if (!text || text.length < 20) return;
 
-      console.log('Found text nodes with quoted/mentioned:', textNodes.length);
-
-      // For each matching text node, find the parent container
-      textNodes.forEach((textNode, idx) => {
-        // Walk up to find a reasonable container (li, div, article, etc.)
-        let container = textNode.parentElement;
-        for (let i = 0; i < 5 && container; i++) {
-          const tag = container.tagName?.toLowerCase();
-          if (tag === 'li' || tag === 'article' || container.className?.includes('alert') ||
-              container.className?.includes('item') || container.className?.includes('row') ||
-              container.className?.includes('notification')) {
-            break;
-          }
-          container = container.parentElement;
-        }
-
-        if (!container) return;
-
-        const text = container.textContent?.trim() || '';
-
-        // Skip likes/reactions
+        // Skip likes/reactions - only process quotes and mentions
         if (text.toLowerCase().includes('reacted') || text.toLowerCase().includes('with like')) {
           return;
         }
 
-        // Determine type
-        let type = 'reply';
-        if (text.toLowerCase().includes('mentioned')) {
-          type = 'mention';
-        } else if (text.toLowerCase().includes('quoted')) {
-          type = 'quote';
-        }
+        // Must contain quoted or mentioned
+        if (!text.toLowerCase().includes('quoted') && !text.toLowerCase().includes('mentioned')) return;
 
-        // Find any link to posts or threads
-        const links = container.querySelectorAll('a[href]');
+        // Determine type
+        const type = text.toLowerCase().includes('mentioned') ? 'mention' : 'quote';
+
+        // Find the link to the post/thread - XenForo uses various link patterns
+        const links = alertEl.querySelectorAll('a[href]');
         let postUrl = '';
         let threadTitle = '';
+        let author = '';
 
         links.forEach(link => {
           const href = link.href || '';
-          if (href.includes('/posts/') || href.includes('/threads/') || href.includes('/boards/')) {
+          const linkText = link.textContent?.trim() || '';
+
+          // Check for member/profile links to get author
+          if (href.includes('/members/') || href.includes('/profile/')) {
+            if (!author && linkText.length > 1 && linkText.length < 50) {
+              author = linkText;
+            }
+          }
+
+          // Check for post/thread links
+          if (href.includes('/posts/') || href.includes('/threads/') || href.includes('post-')) {
             if (!postUrl) postUrl = href;
-            // Try to get thread title from link text
-            const linkText = link.textContent?.trim() || '';
-            if (linkText.length > 5 && linkText.length < 200 && !linkText.includes('quoted') && !linkText.includes('mentioned')) {
+          }
+
+          // Get thread title from link text (usually longer text after the action description)
+          if (linkText.length > 5 && linkText.length < 200 &&
+              !linkText.includes('quoted') && !linkText.includes('mentioned') &&
+              !linkText.includes('reacted') && linkText !== author) {
+            if (!threadTitle || linkText.length > threadTitle.length) {
               threadTitle = linkText;
             }
           }
         });
 
-        // Extract author - first link is usually the author
-        const authorLink = container.querySelector('a[href*="/members/"], a[href*="/user/"], a[href*="/profile/"]');
-        const author = authorLink?.textContent?.trim() || '';
-
         // Fallback: extract author from text pattern "Username quoted your post"
-        let extractedAuthor = author;
-        if (!extractedAuthor) {
-          const authorMatch = text.match(/^([A-Za-z0-9_]+)\s+(quoted|mentioned)/i);
+        if (!author) {
+          // The text format is typically "Username quoted your post in the thread..."
+          const authorMatch = text.match(/^\s*([A-Za-z0-9_]+)\s+(quoted|mentioned)/i);
           if (authorMatch) {
-            extractedAuthor = authorMatch[1];
+            author = authorMatch[1];
           }
         }
 
-        // Extract timestamp
-        const timeEl = container.querySelector('time, [class*="time"], [class*="date"]');
-        const timestamp = timeEl?.textContent?.trim() || timeEl?.getAttribute('datetime') || timeEl?.getAttribute('title') || '';
-
-        // Also try to get thread title from text pattern
+        // Extract thread title from text if not found in links
         if (!threadTitle) {
-          const threadMatch = text.match(/in the thread\s+(.+?)(?:\.|Today|Yesterday|\d+\s+(?:minute|hour|day))/i);
+          // Pattern: "in the thread Football QOTD: What's the latest..."
+          const threadMatch = text.match(/in the thread\s+(?:Football\s+)?(.+?)(?:\.\s*(?:\d|Today|Yesterday|$))/i);
           if (threadMatch) {
             threadTitle = threadMatch[1].trim();
           }
         }
 
-        if (postUrl && !seenUrls.has(postUrl) && (type === 'mention' || type === 'quote')) {
+        // Extract timestamp - look for time element or date text
+        const timeEl = alertEl.querySelector('time, .DateTime, [class*="time"]');
+        let timestamp = timeEl?.textContent?.trim() || timeEl?.getAttribute('datetime') || timeEl?.getAttribute('title') || '';
+        if (!timestamp) {
+          const timeMatch = text.match(/(\d+\s+(?:minute|hour|day)s?\s+ago|Today at \d+:\d+|Yesterday at \d+:\d+)/i);
+          if (timeMatch) {
+            timestamp = timeMatch[1];
+          }
+        }
+
+        if (!seenUrls.has(postUrl) && postUrl) {
           seenUrls.add(postUrl);
           items.push({
             idx,
             type,
-            author: extractedAuthor || 'Unknown',
+            author: author || 'Unknown',
             postUrl,
             threadTitle: threadTitle || 'Unknown Thread',
             timestamp,
@@ -805,30 +789,27 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         }
       });
 
-      // Strategy 2: Fallback - look for standard list items with links
+      // If no alerts found with li selector, try contentRow divs
       if (items.length === 0) {
-        const listItems = document.querySelectorAll('li, .contentRow, [class*="alert"], [class*="notification"]');
-        listItems.forEach((el, idx) => {
+        console.log('No li alerts found, trying contentRow divs...');
+        const contentRows = document.querySelectorAll('.contentRow, .alert');
+        contentRows.forEach((el, idx) => {
           const text = el.textContent?.trim() || '';
           if (!text || text.length < 20) return;
-
-          // Must contain quoted or mentioned
+          if (text.toLowerCase().includes('reacted') || text.toLowerCase().includes('with like')) return;
           if (!text.toLowerCase().includes('quoted') && !text.toLowerCase().includes('mentioned')) return;
 
-          // Skip reactions
-          if (text.toLowerCase().includes('reacted') || text.toLowerCase().includes('with like')) return;
-
           const type = text.toLowerCase().includes('mentioned') ? 'mention' : 'quote';
-
-          const link = el.querySelector('a[href*="/posts/"], a[href*="/threads/"], a[href*="/boards/"]');
+          const link = el.querySelector('a[href*="/posts/"], a[href*="/threads/"]');
           const postUrl = link?.href || '';
 
           if (postUrl && !seenUrls.has(postUrl)) {
             seenUrls.add(postUrl);
+            const authorMatch = text.match(/^\s*([A-Za-z0-9_]+)\s+(quoted|mentioned)/i);
             items.push({
               idx,
               type,
-              author: 'Unknown',
+              author: authorMatch ? authorMatch[1] : 'Unknown',
               postUrl,
               threadTitle: '',
               timestamp: '',
