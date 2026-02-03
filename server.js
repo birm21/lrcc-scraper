@@ -890,21 +890,27 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
       try {
         // Navigate to the actual post
-        // /boards/posts/ URLs may redirect to /boards/threads/ - wait for networkidle
         const isPostsUrl = alert.postUrl.includes('/boards/posts/');
-        console.log(`  isPostsUrl: ${isPostsUrl}`);
+        console.log(`  isPostsUrl: ${isPostsUrl}, URL: ${alert.postUrl}`);
 
-        const response = await page.goto(alert.postUrl, {
-          waitUntil: 'networkidle2',
-          timeout: 25000
-        });
+        // For /posts/ URLs, they redirect to /threads/ - need to wait for full navigation
+        if (isPostsUrl) {
+          // Navigate and wait for potential redirect
+          const [response] = await Promise.all([
+            page.goto(alert.postUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }),
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }).catch(() => null)
+          ]);
+          console.log(`  HTTP status: ${response?.status() || 'no response'}`);
+        } else {
+          const response = await page.goto(alert.postUrl, {
+            waitUntil: 'networkidle2',
+            timeout: 25000
+          });
+          console.log(`  HTTP status: ${response?.status() || 'no response'}`);
+        }
 
-        // Log HTTP status
-        const httpStatus = response?.status() || 'no response';
-        console.log(`  HTTP status: ${httpStatus}`);
-
-        // Wait for content to load
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        // Wait for content to render
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         // Log the actual URL we landed on (may differ from postUrl due to redirects)
         const finalUrl = page.url();
