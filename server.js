@@ -425,53 +425,142 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     // Set user agent
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Navigate to On3 login page
+    // Navigate to On3 login page (use the main login, not boards login)
     console.log('Navigating to On3 login...');
-    await page.goto('https://www.on3.com/boards/login/', { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto('https://www.on3.com/teams/ohio-state-buckeyes/login/', { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Wait for login form
-    await page.waitForSelector('input[name="login"]', { timeout: 10000 }).catch(() => {
-      console.log('Login input not found, trying alternative selectors...');
+    // Wait for page to fully render
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Debug: log what inputs we find on the page
+    const formDebug = await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input'));
+      return inputs.map(i => ({
+        name: i.name,
+        type: i.type,
+        id: i.id,
+        placeholder: i.placeholder,
+        className: i.className
+      }));
     });
+    console.log('Found inputs on page:', JSON.stringify(formDebug, null, 2));
 
-    // Try to find login form elements
-    const loginSelector = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="login"]');
-      for (const input of inputs) {
-        if (input.name === 'login' || input.placeholder?.toLowerCase().includes('email') || input.placeholder?.toLowerCase().includes('username')) {
-          return `input[name="${input.name}"]` || `input[placeholder="${input.placeholder}"]`;
-        }
+    // Try multiple possible selectors for login field
+    const loginSelectors = [
+      'input[name="login"]',
+      'input[name="email"]',
+      'input[name="username"]',
+      'input[type="email"]',
+      'input[placeholder*="email" i]',
+      'input[placeholder*="username" i]',
+      'input[placeholder*="name" i]'
+    ];
+
+    let loginInput = null;
+    for (const selector of loginSelectors) {
+      loginInput = await page.$(selector);
+      if (loginInput) {
+        console.log(`Found login input with selector: ${selector}`);
+        break;
       }
-      return null;
-    });
+    }
 
-    // Enter credentials - XenForo uses specific field names
+    if (!loginInput) {
+      throw new Error('Could not find login input field. Available inputs: ' + JSON.stringify(formDebug));
+    }
+
+    // Try multiple possible selectors for password field
+    const passwordSelectors = [
+      'input[name="password"]',
+      'input[type="password"]'
+    ];
+
+    let passwordInput = null;
+    for (const selector of passwordSelectors) {
+      passwordInput = await page.$(selector);
+      if (passwordInput) {
+        console.log(`Found password input with selector: ${selector}`);
+        break;
+      }
+    }
+
+    if (!passwordInput) {
+      throw new Error('Could not find password input field');
+    }
+
+    // Enter credentials
     console.log('Entering credentials...');
-    await page.type('input[name="login"]', on3Username, { delay: 50 });
-    await page.type('input[name="password"]', on3Password, { delay: 50 });
+    await loginInput.type(on3Username, { delay: 50 });
+    await passwordInput.type(on3Password, { delay: 50 });
 
-    // Click login button
+    // Find and click login button
+    const submitSelectors = [
+      'button[type="submit"]',
+      'input[type="submit"]',
+      '.button--primary',
+      'button.button--primary',
+      'button:contains("Log in")',
+      '[class*="button"][class*="primary"]'
+    ];
+
+    let submitButton = null;
+    for (const selector of submitSelectors) {
+      submitButton = await page.$(selector);
+      if (submitButton) {
+        console.log(`Found submit button with selector: ${selector}`);
+        break;
+      }
+    }
+
+    // If no button found, try finding by text content
+    if (!submitButton) {
+      submitButton = await page.evaluateHandle(() => {
+        const buttons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+        return buttons.find(b => b.textContent?.toLowerCase().includes('log in') || b.value?.toLowerCase().includes('log in'));
+      });
+    }
+
+    console.log('Clicking submit button...');
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
-      page.click('button[type="submit"], input[type="submit"], .button--primary')
+      submitButton.click()
     ]);
 
     // Wait for page to settle
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Check if logged in by looking for alerts link
-    const isLoggedIn = await page.evaluate(() => {
-      return document.querySelector('a[href*="/account/alerts"]') !== null ||
-             document.querySelector('.p-navgroup-link--alerts') !== null ||
-             document.querySelector('[data-xf-init*="alerts"]') !== null;
+    // Debug: log current URL and page title
+    const currentUrl = page.url();
+    const pageTitle = await page.title();
+    console.log(`After login - URL: ${currentUrl}, Title: ${pageTitle}`);
+
+    // Check if logged in by looking for multiple indicators
+    const loginCheck = await page.evaluate(() => {
+      const indicators = {
+        alertsLink: document.querySelector('a[href*="/account/alerts"]') !== null,
+        alertsNav: document.querySelector('.p-navgroup-link--alerts') !== null,
+        alertsData: document.querySelector('[data-xf-init*="alerts"]') !== null,
+        accountLink: document.querySelector('a[href*="/account"]') !== null,
+        logoutLink: document.querySelector('a[href*="logout"]') !== null,
+        userMenu: document.querySelector('[class*="avatar"], [class*="user-nav"], [class*="member"]') !== null
+      };
+      return indicators;
     });
+    console.log('Login indicators:', JSON.stringify(loginCheck));
+
+    const isLoggedIn = Object.values(loginCheck).some(v => v === true);
 
     if (!isLoggedIn) {
-      // Check for login error
+      // Check for login error message
       const errorMsg = await page.evaluate(() => {
-        const error = document.querySelector('.blockMessage--error, .error, [class*="error"]');
+        const error = document.querySelector('.blockMessage--error, .error, [class*="error"], [class*="alert-danger"]');
         return error?.textContent?.trim() || null;
       });
+
+      // Also get page content for debugging
+      const bodyText = await page.evaluate(() => document.body?.textContent?.substring(0, 500));
+      console.log('Page body preview:', bodyText);
+
       throw new Error(errorMsg || 'Login failed - could not verify logged in state');
     }
 
