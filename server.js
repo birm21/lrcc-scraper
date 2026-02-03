@@ -890,27 +890,17 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
       try {
         // Navigate to the actual post
-        const isPostsUrl = alert.postUrl.includes('/boards/posts/');
-        console.log(`  isPostsUrl: ${isPostsUrl}, URL: ${alert.postUrl}`);
+        console.log(`  Navigating to: ${alert.postUrl}`);
 
-        // For /posts/ URLs, they redirect to /threads/ - need to wait for full navigation
-        if (isPostsUrl) {
-          // Navigate and wait for potential redirect
-          const [response] = await Promise.all([
-            page.goto(alert.postUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }),
-            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }).catch(() => null)
-          ]);
-          console.log(`  HTTP status: ${response?.status() || 'no response'}`);
-        } else {
-          const response = await page.goto(alert.postUrl, {
-            waitUntil: 'networkidle2',
-            timeout: 25000
-          });
-          console.log(`  HTTP status: ${response?.status() || 'no response'}`);
-        }
+        const response = await page.goto(alert.postUrl, {
+          waitUntil: 'networkidle0',  // Wait for no network activity
+          timeout: 30000
+        });
 
-        // Wait for content to render
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(`  HTTP status: ${response?.status() || 'no response'}`);
+
+        // Wait for any JS rendering
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
         // Log the actual URL we landed on (may differ from postUrl due to redirects)
         const finalUrl = page.url();
