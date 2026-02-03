@@ -568,10 +568,7 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
     // The correct On3 alerts URL (confirmed by user)
     const alertsUrls = [
-      'https://www.on3.com/boards/account/alerts',  // Primary - confirmed correct
-      'https://www.on3.com/boards/account/alerts/', // With trailing slash
-      'https://www.on3.com/db/boards/account/alerts/',
-      'https://www.on3.com/account/alerts/'
+      'https://www.on3.com/boards/account/alerts'  // Primary - confirmed correct
     ];
 
     let alertsPageFound = false;
