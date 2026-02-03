@@ -906,12 +906,14 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
         // Extract the actual post content with detailed debugging
         const postData = await page.evaluate(() => {
-          const debug = {
-            pageTitle: document.title,
-            currentUrl: window.location.href,
-            selectorsFound: {},
-            bodyPreview: document.body?.innerHTML?.substring(0, 500) || 'no body'
-          };
+          try {
+            const debug = {
+              pageTitle: document.title || 'no title',
+              currentUrl: window.location.href || 'no url',
+              selectorsFound: {},
+              bodyPreview: document.body?.innerHTML?.substring(0, 500) || 'no body',
+              bodyLength: document.body?.innerHTML?.length || 0
+            };
 
           // Check what selectors match - expanded list for On3
           debug.selectorsFound = {
@@ -1094,6 +1096,21 @@ app.get('/scrape-on3-alerts', async (req, res) => {
             pageUrl: window.location.href,
             debug
           };
+          } catch (evalErr) {
+            return {
+              content: '',
+              quotedText: '',
+              threadTitle: document.title || '',
+              postAuthor: '',
+              pageUrl: window.location.href || '',
+              debug: {
+                evalError: evalErr.message || String(evalErr),
+                pageTitle: document.title || 'no title',
+                currentUrl: window.location.href || 'no url',
+                bodyLength: document.body?.innerHTML?.length || 0
+              }
+            };
+          }
         });
 
         console.log(`  Content extracted: ${postData.content?.length || 0} chars, quote: ${postData.quotedText?.length || 0} chars`);
