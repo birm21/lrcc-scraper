@@ -1018,31 +1018,50 @@ app.get('/debug-on3-alerts', async (req, res) => {
     console.log('Tried URLs:', JSON.stringify(triedUrls));
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Capture page state
+    // Capture page state - focus on alert elements and their links
     const debugData = await page.evaluate(() => {
-      // Get raw HTML of alert containers
-      const html = document.body?.innerHTML?.substring(0, 50000) || '';
+      // Find alert list items and capture their full structure
+      const alertElements = document.querySelectorAll('li.alert, li.js-alert, li.block-row');
+      const alertDetails = [];
 
-      // Find all elements with relevant text
-      const relevantElements = [];
-      document.querySelectorAll('*').forEach(el => {
-        const text = el.textContent?.toLowerCase() || '';
-        if ((text.includes('quoted') || text.includes('mentioned')) && el.children.length < 3) {
-          relevantElements.push({
-            tag: el.tagName,
-            class: el.className,
-            parent: el.parentElement?.className,
-            text: el.textContent?.substring(0, 200)
-          });
+      alertElements.forEach((el, idx) => {
+        if (idx >= 5) return; // Limit to first 5
+        const text = el.textContent?.trim() || '';
+        if (!text.includes('quoted') && !text.includes('mentioned')) return;
+        if (text.includes('reacted') || text.includes('with Like')) return;
+
+        // Get all links in this alert
+        const links = Array.from(el.querySelectorAll('a[href]')).map(a => ({
+          href: a.href,
+          text: a.textContent?.trim()?.substring(0, 50),
+          class: a.className
+        }));
+
+        // Check for data attributes that might contain URLs
+        const dataAttrs = {};
+        for (const attr of el.attributes) {
+          if (attr.name.startsWith('data-')) {
+            dataAttrs[attr.name] = attr.value;
+          }
         }
+
+        // Get the outer HTML of the alert (truncated)
+        const outerHtml = el.outerHTML?.substring(0, 2000) || '';
+
+        alertDetails.push({
+          text: text.substring(0, 200),
+          links,
+          dataAttrs,
+          outerHtml
+        });
       });
 
       return {
         url: window.location.href,
         title: document.title,
-        bodyText: document.body?.textContent?.substring(0, 5000),
-        relevantElements: relevantElements.slice(0, 20),
-        htmlSample: html.substring(0, 10000)
+        alertCount: alertElements.length,
+        alertDetails,
+        bodyText: document.body?.textContent?.substring(0, 2000)
       };
     });
 
