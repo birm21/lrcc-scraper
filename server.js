@@ -892,19 +892,47 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         // Navigate to the actual post
         console.log(`  Navigating to: ${alert.postUrl}`);
 
-        const response = await page.goto(alert.postUrl, {
-          waitUntil: 'domcontentloaded',  // Faster - just wait for DOM
-          timeout: 20000
-        });
+        // Check if this is a /posts/ URL - these are problematic
+        const isPostsUrl = alert.postUrl.includes('/boards/posts/');
 
-        console.log(`  HTTP status: ${response?.status() || 'no response'}`);
+        let response;
+        let finalUrl = alert.postUrl;
+
+        if (isPostsUrl) {
+          // /posts/ URLs often timeout - try with shorter timeout and load event
+          try {
+            response = await page.goto(alert.postUrl, {
+              waitUntil: 'load',
+              timeout: 15000
+            });
+            finalUrl = page.url();
+            console.log(`  /posts/ URL loaded, now at: ${finalUrl}`);
+          } catch (navErr) {
+            // If navigation times out, check where we ended up
+            finalUrl = page.url();
+            console.log(`  /posts/ URL timeout, currently at: ${finalUrl}`);
+
+            // If we didn't redirect to /threads/, skip content extraction
+            if (!finalUrl.includes('/threads/')) {
+              console.log(`  Skipping content extraction for /posts/ URL`);
+              throw new Error('Posts URL did not redirect - using notification text');
+            }
+          }
+        } else {
+          // Regular /threads/ URL - these work fine
+          response = await page.goto(alert.postUrl, {
+            waitUntil: 'networkidle2',
+            timeout: 20000
+          });
+          finalUrl = page.url();
+        }
+
+        console.log(`  HTTP status: ${response?.status() || 'unknown'}`);
 
         // Wait for any JS rendering
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
-        // Log the actual URL we landed on (may differ from postUrl due to redirects)
-        const finalUrl = page.url();
-        console.log(`  Landed on: ${finalUrl}`);
+        console.log(`  Final URL: ${finalUrl}`);
 
         // Extract the actual post content with detailed debugging
         const postData = await page.evaluate(() => {
