@@ -893,14 +893,14 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         console.log(`  Navigating to: ${alert.postUrl}`);
 
         const response = await page.goto(alert.postUrl, {
-          waitUntil: 'networkidle0',  // Wait for no network activity
-          timeout: 30000
+          waitUntil: 'domcontentloaded',  // Faster - just wait for DOM
+          timeout: 20000
         });
 
         console.log(`  HTTP status: ${response?.status() || 'no response'}`);
 
         // Wait for any JS rendering
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 3000));
 
         // Log the actual URL we landed on (may differ from postUrl due to redirects)
         const finalUrl = page.url();
