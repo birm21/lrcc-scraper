@@ -712,73 +712,82 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         // Determine type
         const type = text.toLowerCase().includes('mentioned') ? 'mention' : 'quote';
 
-        // Find the link to the post/thread - XenForo uses various link patterns
-        const links = alertEl.querySelectorAll('a[href]');
-        let postUrl = '';
-        let threadTitle = '';
+        // Extract author and thread title from text using regex
+        // Pattern: "Username quoted your post in the thread [Category] Thread Title."
+        // Category might be "Football", "Basketball", etc. (shown as badge)
+        const fullMatch = text.match(/([A-Za-z0-9_]+)\s+(quoted|mentioned).*?in the thread\s+(?:Football\s+|Basketball\s+|Baseball\s+|Other\s+)?(.+?)(?:\.\s*$|\.\s*(?:\d+\s+\w+\s+ago|Today|Yesterday))/is);
+
         let author = '';
+        let threadTitle = '';
 
-        links.forEach(link => {
-          const href = link.href || '';
-          const linkText = link.textContent?.trim() || '';
+        if (fullMatch) {
+          author = fullMatch[1];
+          threadTitle = fullMatch[3].trim();
+        }
 
-          // Check for member/profile links to get author
-          if (href.includes('/members/') || href.includes('/profile/')) {
-            if (!author && linkText.length > 1 && linkText.length < 50) {
-              author = linkText;
+        // Find post URL - XenForo alerts often have the URL on an inner link or the row itself
+        let postUrl = '';
+
+        // Check for data-href on the alert element itself
+        postUrl = alertEl.getAttribute('data-href') || alertEl.getAttribute('href') || '';
+
+        // If not on element, look for links to posts/threads
+        if (!postUrl) {
+          const links = alertEl.querySelectorAll('a[href]');
+          links.forEach(link => {
+            const href = link.href || '';
+            // Skip member profile links
+            if (href.includes('/members/') || href.includes('/profile/')) return;
+            // Find post/thread links
+            if (href.includes('/posts/') || href.includes('/threads/') || href.includes('post-')) {
+              if (!postUrl) postUrl = href;
             }
-          }
+          });
+        }
 
-          // Check for post/thread links
-          if (href.includes('/posts/') || href.includes('/threads/') || href.includes('post-')) {
-            if (!postUrl) postUrl = href;
-          }
-
-          // Get thread title from link text (usually longer text after the action description)
-          if (linkText.length > 5 && linkText.length < 200 &&
-              !linkText.includes('quoted') && !linkText.includes('mentioned') &&
-              !linkText.includes('reacted') && linkText !== author) {
-            if (!threadTitle || linkText.length > threadTitle.length) {
-              threadTitle = linkText;
-            }
-          }
-        });
-
-        // Fallback: extract author from text pattern "Username quoted your post"
-        if (!author) {
-          // The text format is typically "Username quoted your post in the thread..."
-          const authorMatch = text.match(/^\s*([A-Za-z0-9_]+)\s+(quoted|mentioned)/i);
-          if (authorMatch) {
-            author = authorMatch[1];
+        // Check for contentRow-main link which often wraps the alert content
+        if (!postUrl) {
+          const mainLink = alertEl.querySelector('.contentRow-main a[href], .contentRow-title a[href]');
+          if (mainLink) {
+            postUrl = mainLink.href;
           }
         }
 
-        // Extract thread title from text if not found in links
-        if (!threadTitle) {
-          // Pattern: "in the thread Football QOTD: What's the latest..."
-          const threadMatch = text.match(/in the thread\s+(?:Football\s+)?(.+?)(?:\.\s*(?:\d|Today|Yesterday|$))/i);
-          if (threadMatch) {
-            threadTitle = threadMatch[1].trim();
+        // If still no URL, check if the entire alert is wrapped in a link
+        if (!postUrl) {
+          const parentLink = alertEl.closest('a[href]');
+          if (parentLink) {
+            postUrl = parentLink.href;
           }
         }
 
-        // Extract timestamp - look for time element or date text
+        // Fallback: use a constructed URL based on any link that's not a member link
+        if (!postUrl) {
+          const anyLink = alertEl.querySelector('a[href]:not([href*="/members/"])');
+          if (anyLink) {
+            postUrl = anyLink.href;
+          }
+        }
+
+        // Extract timestamp
         const timeEl = alertEl.querySelector('time, .DateTime, [class*="time"]');
         let timestamp = timeEl?.textContent?.trim() || timeEl?.getAttribute('datetime') || timeEl?.getAttribute('title') || '';
         if (!timestamp) {
-          const timeMatch = text.match(/(\d+\s+(?:minute|hour|day)s?\s+ago|Today at \d+:\d+|Yesterday at \d+:\d+)/i);
+          const timeMatch = text.match(/(\d+\s+(?:minute|hour|day)s?\s+ago|Today at \d+:\d+(?:\s*[AP]M)?|Yesterday at \d+:\d+(?:\s*[AP]M)?)/i);
           if (timeMatch) {
             timestamp = timeMatch[1];
           }
         }
 
-        if (!seenUrls.has(postUrl) && postUrl) {
-          seenUrls.add(postUrl);
+        // Skip if we don't have a post URL (fall back to using alert index as unique ID)
+        const alertKey = postUrl || `alert-${idx}`;
+        if (!seenUrls.has(alertKey)) {
+          seenUrls.add(alertKey);
           items.push({
             idx,
             type,
             author: author || 'Unknown',
-            postUrl,
+            postUrl: postUrl || '', // May be empty if no link found
             threadTitle: threadTitle || 'Unknown Thread',
             timestamp,
             alertText: text.substring(0, 300)
