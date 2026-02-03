@@ -1,7 +1,11 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const chromium = require('@sparticuz/chromium');
+
+// Add stealth plugin to avoid bot detection
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -402,7 +406,7 @@ app.get('/scrape-on3-alerts', async (req, res) => {
   try {
     console.log('Starting On3 alerts scrape...');
 
-    // Launch browser
+    // Launch browser with stealth settings
     const executablePath = await chromium.executablePath();
     console.log('Chromium executable path:', executablePath);
 
@@ -413,21 +417,49 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process'
+        '--disable-blink-features=AutomationControlled',
+        '--window-size=1920,1080'
       ],
       defaultViewport: { width: 1920, height: 1080 },
       executablePath: executablePath,
-      headless: true
+      headless: 'new'
     });
 
     const page = await browser.newPage();
 
-    // Set user agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // Set extra headers to appear more like a real browser
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1'
+    });
 
-    // Navigate to On3 login page (use the main login, not boards login)
+    // Set realistic user agent
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+
+    // Override webdriver detection
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      window.chrome = { runtime: {} };
+    });
+
+    // Navigate to On3 login page with longer timeout and different wait strategy
     console.log('Navigating to On3 login...');
-    await page.goto('https://www.on3.com/teams/ohio-state-buckeyes/login/', { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto('https://www.on3.com/teams/ohio-state-buckeyes/login/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 90000
+    });
+
+    // Wait a bit more for JS to execute
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Wait for page to fully render
     await new Promise(resolve => setTimeout(resolve, 3000));
