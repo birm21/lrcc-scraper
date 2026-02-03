@@ -566,13 +566,17 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
     console.log('Login successful, navigating to alerts...');
 
-    // Try multiple possible alerts page URLs
+    // Try multiple possible alerts page URLs - On3 uses XenForo which has various URL patterns
     const alertsUrls = [
+      'https://www.on3.com/db/boards/account/alerts/',
       'https://www.on3.com/db/account/alerts/',
-      'https://www.on3.com/teams/ohio-state-buckeyes/account/alerts/',
       'https://www.on3.com/boards/ohio-state-buckeyes/account/alerts/',
+      'https://www.on3.com/teams/ohio-state-buckeyes/boards/account/alerts/',
+      'https://www.on3.com/community/account/alerts/',
       'https://www.on3.com/boards/account/alerts/',
-      'https://www.on3.com/account/alerts/'
+      'https://www.on3.com/account/alerts/',
+      'https://www.on3.com/db/alerts/',
+      'https://www.on3.com/alerts/'
     ];
 
     let alertsPageFound = false;
@@ -1005,12 +1009,16 @@ app.get('/debug-on3-alerts', async (req, res) => {
 
     // Try multiple possible alerts page URLs
     const alertsUrls = [
+      'https://www.on3.com/db/boards/account/alerts/',
       'https://www.on3.com/db/account/alerts/',
-      'https://www.on3.com/teams/ohio-state-buckeyes/account/alerts/',
+      'https://www.on3.com/boards/ohio-state-buckeyes/account/alerts/',
+      'https://www.on3.com/teams/ohio-state-buckeyes/boards/account/alerts/',
+      'https://www.on3.com/community/account/alerts/',
       'https://www.on3.com/boards/account/alerts/',
       'https://www.on3.com/account/alerts/'
     ];
 
+    const triedUrls = [];
     let usedUrl = null;
     for (const url of alertsUrls) {
       console.log(`Debug: trying ${url}`);
@@ -1022,12 +1030,15 @@ app.get('/debug-on3-alerts', async (req, res) => {
         return text.includes('404') || text.includes("can't find") || text.includes('deflating');
       });
 
+      triedUrls.push({ url, is404, finalUrl: page.url() });
+
       if (!is404) {
         usedUrl = url;
         break;
       }
     }
 
+    console.log('Tried URLs:', JSON.stringify(triedUrls));
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Capture page state
@@ -1062,6 +1073,9 @@ app.get('/debug-on3-alerts', async (req, res) => {
 
     return res.json({
       success: true,
+      availableLinks: availableLinks,
+      triedUrls: triedUrls,
+      usedUrl: usedUrl,
       debug: debugData
     });
 
