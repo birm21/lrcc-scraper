@@ -572,18 +572,20 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     // Wait for alerts to load
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Extract alerts
-    console.log('Extracting alerts...');
-    const alerts = await page.evaluate(() => {
-      const alertItems = [];
-      const alertElements = document.querySelectorAll('.alert, .contentRow, [class*="alert-item"], li.block-row');
+    // First pass: Extract alert metadata and URLs
+    console.log('Extracting alert list...');
+    const alertList = await page.evaluate(() => {
+      const items = [];
+      const alertElements = document.querySelectorAll('.alert, .contentRow, [class*="alert-item"], li.block-row, [class*="alertRow"]');
 
       alertElements.forEach((el, idx) => {
-        // Skip if not a real alert
-        if (!el.querySelector('a')) return;
-
         const text = el.textContent?.trim() || '';
         if (!text) return;
+
+        // Skip likes/reactions - we only want mentions and quotes
+        if (text.toLowerCase().includes('reacted') || text.toLowerCase().includes('liked') || text.toLowerCase().includes('with like')) {
+          return;
+        }
 
         // Determine alert type
         let type = 'reply';
@@ -593,56 +595,135 @@ app.get('/scrape-on3-alerts', async (req, res) => {
           type = 'quote';
         }
 
-        // Extract author
-        const authorLink = el.querySelector('a[href*="/members/"], .username');
+        // Get the main link that goes to the actual post
+        const mainLink = el.querySelector('a[href*="/posts/"], a[href*="/threads/"]');
+        const postUrl = mainLink?.href || '';
+
+        // Extract author from the alert text
+        const authorLink = el.querySelector('a[href*="/members/"]');
         const author = authorLink?.textContent?.trim() || 'Unknown';
 
-        // Extract thread info
-        const threadLink = el.querySelector('a[href*="/threads/"]');
-        const threadTitle = threadLink?.textContent?.trim() || '';
-        const threadUrl = threadLink?.href || '';
-
-        // Extract content preview
-        const contentEl = el.querySelector('.contentRow-snippet, .alert-body, p');
-        const content = contentEl?.textContent?.trim() || text.substring(0, 500);
-
         // Extract timestamp
-        const timeEl = el.querySelector('time, .dateTime');
+        const timeEl = el.querySelector('time, .dateTime, [class*="time"]');
         const timestamp = timeEl?.textContent?.trim() || timeEl?.getAttribute('title') || '';
 
-        // Try to find quoted text
-        let quotedText = '';
-        const quoteEl = el.querySelector('blockquote, .quote, [class*="quote"]');
-        if (quoteEl) {
-          quotedText = quoteEl.textContent?.trim() || '';
-        }
+        // Get thread title from alert text
+        const threadMatch = text.match(/in the thread\s+(.+?)(?:\.|$)/i);
+        const threadTitle = threadMatch ? threadMatch[1].trim() : '';
 
-        if (author && (threadTitle || content)) {
-          alertItems.push({
-            id: `alert-${idx}-${Date.now()}`,
+        if (postUrl && (type === 'mention' || type === 'quote')) {
+          items.push({
+            idx,
             type,
             author,
-            threadTitle: threadTitle || 'Unknown Thread',
-            threadUrl,
-            content: content.substring(0, 1000),
-            quotedText: quotedText.substring(0, 500),
-            timestamp
+            postUrl,
+            threadTitle,
+            timestamp,
+            alertText: text.substring(0, 200)
           });
         }
       });
 
-      return alertItems;
+      return items;
     });
+
+    console.log(`Found ${alertList.length} relevant alerts (mentions/quotes only)`);
+
+    // Second pass: Visit each alert's post to get actual content
+    // Limit to 15 to avoid timeout
+    const alertsToProcess = alertList.slice(0, 15);
+    const alerts = [];
+
+    for (let i = 0; i < alertsToProcess.length; i++) {
+      const alert = alertsToProcess[i];
+      console.log(`Processing alert ${i + 1}/${alertsToProcess.length}: ${alert.postUrl}`);
+
+      try {
+        // Navigate to the actual post
+        await page.goto(alert.postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        // Extract the actual post content
+        const postData = await page.evaluate(() => {
+          // Try to find the highlighted/target post (usually has a class indicating it's the target)
+          let postEl = document.querySelector('.message--post[style*="background"], .message--post.is-highlighted, [id^="post-"].target, .bbWrapper');
+
+          // Fallback: find the last post on the page or the main content
+          if (!postEl) {
+            const allPosts = document.querySelectorAll('.message--post, .message-body, article[class*="message"]');
+            postEl = allPosts[allPosts.length - 1] || document.querySelector('.bbWrapper, .message-content');
+          }
+
+          // Get the message content
+          let content = '';
+          const contentEl = postEl?.querySelector('.bbWrapper, .message-body, .message-content, [class*="content"]');
+          if (contentEl) {
+            content = contentEl.textContent?.trim() || '';
+          } else if (postEl) {
+            content = postEl.textContent?.trim() || '';
+          }
+
+          // Try to find what was quoted (if this is a quote response)
+          let quotedText = '';
+          const quoteBlock = postEl?.querySelector('blockquote, .quote, [class*="bbCodeBlock--quote"]');
+          if (quoteBlock) {
+            quotedText = quoteBlock.textContent?.trim() || '';
+            // Remove the quoted text from main content to avoid duplication
+            content = content.replace(quotedText, '').trim();
+          }
+
+          // Get thread title from page
+          const threadTitle = document.querySelector('h1, .p-title-value, [class*="thread-title"]')?.textContent?.trim() || '';
+
+          // Get the post author
+          const authorEl = document.querySelector('.message-userDetails a, .username, [class*="author"]');
+          const postAuthor = authorEl?.textContent?.trim() || '';
+
+          return {
+            content: content.substring(0, 2000),
+            quotedText: quotedText.substring(0, 1000),
+            threadTitle,
+            postAuthor,
+            pageUrl: window.location.href
+          };
+        });
+
+        alerts.push({
+          id: `alert-${alert.idx}-${Date.now()}`,
+          type: alert.type,
+          author: alert.author || postData.postAuthor,
+          threadTitle: postData.threadTitle || alert.threadTitle || 'Unknown Thread',
+          threadUrl: postData.pageUrl || alert.postUrl,
+          content: postData.content || alert.alertText,
+          quotedText: postData.quotedText,
+          timestamp: alert.timestamp
+        });
+
+      } catch (err) {
+        console.log(`Error processing alert ${i + 1}: ${err.message}`);
+        // Still add the alert with basic info
+        alerts.push({
+          id: `alert-${alert.idx}-${Date.now()}`,
+          type: alert.type,
+          author: alert.author,
+          threadTitle: alert.threadTitle || 'Unknown Thread',
+          threadUrl: alert.postUrl,
+          content: alert.alertText,
+          quotedText: '',
+          timestamp: alert.timestamp
+        });
+      }
+    }
 
     await browser.close();
     browser = null;
 
-    console.log(`Found ${alerts.length} alerts`);
+    console.log(`Successfully processed ${alerts.length} alerts with content`);
 
     return res.json({
       success: true,
       alertCount: alerts.length,
-      alerts: alerts.slice(0, 50) // Limit to 50 most recent
+      alerts: alerts
     });
 
   } catch (error) {
