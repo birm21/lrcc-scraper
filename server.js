@@ -1115,7 +1115,7 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
       } catch (err) {
         console.log(`Error processing alert ${i + 1}: ${err.message}`);
-        // Still add the alert with basic info
+        // Still add the alert with basic info, include error in debug
         alerts.push({
           id: `alert-${alert.idx}-${Date.now()}`,
           type: alert.type,
@@ -1124,7 +1124,8 @@ app.get('/scrape-on3-alerts', async (req, res) => {
           threadUrl: alert.postUrl,
           content: alert.alertText,
           quotedText: '',
-          timestamp: alert.timestamp
+          timestamp: alert.timestamp,
+          _debug: { error: err.message, postUrl: alert.postUrl }
         });
       }
     }
