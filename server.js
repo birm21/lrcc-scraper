@@ -566,13 +566,64 @@ app.get('/scrape-on3-alerts', async (req, res) => {
 
     console.log('Login successful, navigating to alerts...');
 
-    // Navigate to alerts page - try the direct alerts URL first
-    // Use domcontentloaded for faster loading
-    try {
-      await page.goto('https://www.on3.com/account/alerts/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    } catch (navErr) {
-      console.log('First alerts URL failed, trying alternate...');
-      await page.goto('https://www.on3.com/boards/account/alerts/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Try multiple possible alerts page URLs
+    const alertsUrls = [
+      'https://www.on3.com/db/account/alerts/',
+      'https://www.on3.com/teams/ohio-state-buckeyes/account/alerts/',
+      'https://www.on3.com/boards/ohio-state-buckeyes/account/alerts/',
+      'https://www.on3.com/boards/account/alerts/',
+      'https://www.on3.com/account/alerts/'
+    ];
+
+    let alertsPageFound = false;
+    for (const alertsUrl of alertsUrls) {
+      console.log(`Trying alerts URL: ${alertsUrl}`);
+      try {
+        await page.goto(alertsUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        // Check if we got a 404 page
+        const is404 = await page.evaluate(() => {
+          const bodyText = document.body?.textContent?.toLowerCase() || '';
+          return bodyText.includes('404') || bodyText.includes("can't find") || bodyText.includes('not found') || bodyText.includes('deflating');
+        });
+
+        if (!is404) {
+          console.log(`Found valid alerts page at: ${alertsUrl}`);
+          alertsPageFound = true;
+          break;
+        } else {
+          console.log(`Got 404 at ${alertsUrl}, trying next...`);
+        }
+      } catch (err) {
+        console.log(`Navigation error for ${alertsUrl}: ${err.message}`);
+      }
+    }
+
+    // If no direct URL worked, try to find and click the alerts link from the current page
+    if (!alertsPageFound) {
+      console.log('No direct URL worked, looking for alerts link in page...');
+      const alertsLink = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a[href*="alert"]'));
+        for (const link of links) {
+          if (link.href.includes('alerts')) {
+            return link.href;
+          }
+        }
+        // Also check for notification bell or similar
+        const bellIcon = document.querySelector('[class*="alert"], [class*="notification"], [class*="bell"]');
+        if (bellIcon) {
+          const parentLink = bellIcon.closest('a');
+          if (parentLink) return parentLink.href;
+        }
+        return null;
+      });
+
+      if (alertsLink) {
+        console.log(`Found alerts link in page: ${alertsLink}`);
+        await page.goto(alertsLink, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        alertsPageFound = true;
+      }
     }
 
     console.log('Alerts page URL:', page.url());
@@ -945,9 +996,39 @@ app.get('/debug-on3-alerts', async (req, res) => {
 
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Go to alerts page
-    await page.goto('https://www.on3.com/account/alerts/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // After login, first see what links we have available
+    const availableLinks = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll('a[href*="alert"], a[href*="account"], a[href*="notification"]'));
+      return links.map(l => ({ href: l.href, text: l.textContent?.trim()?.substring(0, 50) }));
+    });
+    console.log('Available links after login:', JSON.stringify(availableLinks));
+
+    // Try multiple possible alerts page URLs
+    const alertsUrls = [
+      'https://www.on3.com/db/account/alerts/',
+      'https://www.on3.com/teams/ohio-state-buckeyes/account/alerts/',
+      'https://www.on3.com/boards/account/alerts/',
+      'https://www.on3.com/account/alerts/'
+    ];
+
+    let usedUrl = null;
+    for (const url of alertsUrls) {
+      console.log(`Debug: trying ${url}`);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const is404 = await page.evaluate(() => {
+        const text = document.body?.textContent?.toLowerCase() || '';
+        return text.includes('404') || text.includes("can't find") || text.includes('deflating');
+      });
+
+      if (!is404) {
+        usedUrl = url;
+        break;
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Capture page state
     const debugData = await page.evaluate(() => {
