@@ -630,8 +630,8 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     console.log(`Found ${alertList.length} relevant alerts (mentions/quotes only)`);
 
     // Second pass: Visit each alert's post to get actual content
-    // Limit to 15 to avoid timeout
-    const alertsToProcess = alertList.slice(0, 15);
+    // Limit to 8 to avoid timeout (each page visit takes ~3-5 seconds)
+    const alertsToProcess = alertList.slice(0, 8);
     const alerts = [];
 
     for (let i = 0; i < alertsToProcess.length; i++) {
