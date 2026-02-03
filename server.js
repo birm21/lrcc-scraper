@@ -900,6 +900,96 @@ app.get('/scrape-on3-alerts', async (req, res) => {
   }
 });
 
+// Debug endpoint - shows what the scraper sees on the alerts page
+app.get('/debug-on3-alerts', async (req, res) => {
+  const on3Username = process.env.ON3_USERNAME;
+  const on3Password = process.env.ON3_PASSWORD;
+
+  if (!on3Username || !on3Password) {
+    return res.status(500).json({ error: 'On3 credentials not configured' });
+  }
+
+  let browser = null;
+
+  try {
+    const executablePath = await chromium.executablePath();
+    browser = await puppeteer.launch({
+      args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
+      defaultViewport: { width: 1920, height: 1080 },
+      executablePath: executablePath,
+      headless: true
+    });
+
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    // Login
+    await page.goto('https://www.on3.com/teams/ohio-state-buckeyes/login/', { waitUntil: 'networkidle2', timeout: 60000 });
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const loginInput = await page.$('input[name="login"], input[name="email"], input[type="email"]');
+    const passwordInput = await page.$('input[name="password"], input[type="password"]');
+
+    if (loginInput && passwordInput) {
+      await loginInput.type(on3Username, { delay: 30 });
+      await passwordInput.type(on3Password, { delay: 30 });
+
+      const submitBtn = await page.$('button[type="submit"]');
+      if (submitBtn) {
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+          submitBtn.click()
+        ]);
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Go to alerts page
+    await page.goto('https://www.on3.com/account/alerts/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Capture page state
+    const debugData = await page.evaluate(() => {
+      // Get raw HTML of alert containers
+      const html = document.body?.innerHTML?.substring(0, 50000) || '';
+
+      // Find all elements with relevant text
+      const relevantElements = [];
+      document.querySelectorAll('*').forEach(el => {
+        const text = el.textContent?.toLowerCase() || '';
+        if ((text.includes('quoted') || text.includes('mentioned')) && el.children.length < 3) {
+          relevantElements.push({
+            tag: el.tagName,
+            class: el.className,
+            parent: el.parentElement?.className,
+            text: el.textContent?.substring(0, 200)
+          });
+        }
+      });
+
+      return {
+        url: window.location.href,
+        title: document.title,
+        bodyText: document.body?.textContent?.substring(0, 5000),
+        relevantElements: relevantElements.slice(0, 20),
+        htmlSample: html.substring(0, 10000)
+      };
+    });
+
+    await browser.close();
+
+    return res.json({
+      success: true,
+      debug: debugData
+    });
+
+  } catch (error) {
+    if (browser) await browser.close();
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`LRCC Scraper running on port ${PORT}`);
 });
