@@ -892,13 +892,19 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         // Navigate to the actual post
         // /boards/posts/ URLs may redirect to /boards/threads/ - wait for networkidle
         const isPostsUrl = alert.postUrl.includes('/boards/posts/');
-        await page.goto(alert.postUrl, {
-          waitUntil: isPostsUrl ? 'networkidle2' : 'domcontentloaded',
-          timeout: 20000
+        console.log(`  isPostsUrl: ${isPostsUrl}`);
+
+        const response = await page.goto(alert.postUrl, {
+          waitUntil: 'networkidle2',
+          timeout: 25000
         });
 
-        // Wait longer for /posts/ URLs since they might redirect
-        await new Promise(resolve => setTimeout(resolve, isPostsUrl ? 2000 : 800));
+        // Log HTTP status
+        const httpStatus = response?.status() || 'no response';
+        console.log(`  HTTP status: ${httpStatus}`);
+
+        // Wait for content to load
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
         // Log the actual URL we landed on (may differ from postUrl due to redirects)
         const finalUrl = page.url();
