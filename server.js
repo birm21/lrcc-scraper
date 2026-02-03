@@ -578,13 +578,26 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     console.log('Alerts page URL:', page.url());
 
     // Wait for alerts to load
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Debug: Log what we see on the alerts page
+    const pageDebug = await page.evaluate(() => {
+      return {
+        url: window.location.href,
+        title: document.title,
+        bodyPreview: document.body?.textContent?.substring(0, 500),
+        alertContainers: document.querySelectorAll('.alert, .contentRow, [class*="alert"], li.block-row, [class*="notification"]').length,
+        allLinks: document.querySelectorAll('a[href*="/posts/"], a[href*="/threads/"]').length
+      };
+    });
+    console.log('Page debug info:', JSON.stringify(pageDebug, null, 2));
 
     // First pass: Extract alert metadata and URLs
     console.log('Extracting alert list...');
     const alertList = await page.evaluate(() => {
       const items = [];
-      const alertElements = document.querySelectorAll('.alert, .contentRow, [class*="alert-item"], li.block-row, [class*="alertRow"]');
+      // Expanded selectors to catch more alert formats
+      const alertElements = document.querySelectorAll('.alert, .contentRow, [class*="alert-item"], li.block-row, [class*="alertRow"], [class*="notification"], .structItem, li[class*="item"]');
 
       alertElements.forEach((el, idx) => {
         const text = el.textContent?.trim() || '';
