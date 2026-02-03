@@ -384,6 +384,188 @@ async function autoScroll(page) {
   console.log('Scroll complete');
 }
 
+// On3 Alerts Scraper - Requires authentication
+app.get('/scrape-on3-alerts', async (req, res) => {
+  // Check for On3 credentials
+  const on3Username = process.env.ON3_USERNAME;
+  const on3Password = process.env.ON3_PASSWORD;
+
+  if (!on3Username || !on3Password) {
+    return res.status(500).json({
+      error: 'On3 credentials not configured',
+      details: 'ON3_USERNAME and ON3_PASSWORD environment variables must be set'
+    });
+  }
+
+  let browser = null;
+
+  try {
+    console.log('Starting On3 alerts scrape...');
+
+    // Launch browser
+    const executablePath = await chromium.executablePath();
+    console.log('Chromium executable path:', executablePath);
+
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process'
+      ],
+      defaultViewport: { width: 1920, height: 1080 },
+      executablePath: executablePath,
+      headless: true
+    });
+
+    const page = await browser.newPage();
+
+    // Set user agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    // Navigate to On3 login page
+    console.log('Navigating to On3 login...');
+    await page.goto('https://www.on3.com/boards/login/', { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Wait for login form
+    await page.waitForSelector('input[name="login"]', { timeout: 10000 }).catch(() => {
+      console.log('Login input not found, trying alternative selectors...');
+    });
+
+    // Try to find login form elements
+    const loginSelector = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="login"]');
+      for (const input of inputs) {
+        if (input.name === 'login' || input.placeholder?.toLowerCase().includes('email') || input.placeholder?.toLowerCase().includes('username')) {
+          return `input[name="${input.name}"]` || `input[placeholder="${input.placeholder}"]`;
+        }
+      }
+      return null;
+    });
+
+    // Enter credentials - XenForo uses specific field names
+    console.log('Entering credentials...');
+    await page.type('input[name="login"]', on3Username, { delay: 50 });
+    await page.type('input[name="password"]', on3Password, { delay: 50 });
+
+    // Click login button
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+      page.click('button[type="submit"], input[type="submit"], .button--primary')
+    ]);
+
+    // Wait for page to settle
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Check if logged in by looking for alerts link
+    const isLoggedIn = await page.evaluate(() => {
+      return document.querySelector('a[href*="/account/alerts"]') !== null ||
+             document.querySelector('.p-navgroup-link--alerts') !== null ||
+             document.querySelector('[data-xf-init*="alerts"]') !== null;
+    });
+
+    if (!isLoggedIn) {
+      // Check for login error
+      const errorMsg = await page.evaluate(() => {
+        const error = document.querySelector('.blockMessage--error, .error, [class*="error"]');
+        return error?.textContent?.trim() || null;
+      });
+      throw new Error(errorMsg || 'Login failed - could not verify logged in state');
+    }
+
+    console.log('Login successful, navigating to alerts...');
+
+    // Navigate to alerts page
+    await page.goto('https://www.on3.com/boards/account/alerts', { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Wait for alerts to load
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Extract alerts
+    console.log('Extracting alerts...');
+    const alerts = await page.evaluate(() => {
+      const alertItems = [];
+      const alertElements = document.querySelectorAll('.alert, .contentRow, [class*="alert-item"], li.block-row');
+
+      alertElements.forEach((el, idx) => {
+        // Skip if not a real alert
+        if (!el.querySelector('a')) return;
+
+        const text = el.textContent?.trim() || '';
+        if (!text) return;
+
+        // Determine alert type
+        let type = 'reply';
+        if (text.toLowerCase().includes('mentioned')) {
+          type = 'mention';
+        } else if (text.toLowerCase().includes('quoted')) {
+          type = 'quote';
+        }
+
+        // Extract author
+        const authorLink = el.querySelector('a[href*="/members/"], .username');
+        const author = authorLink?.textContent?.trim() || 'Unknown';
+
+        // Extract thread info
+        const threadLink = el.querySelector('a[href*="/threads/"]');
+        const threadTitle = threadLink?.textContent?.trim() || '';
+        const threadUrl = threadLink?.href || '';
+
+        // Extract content preview
+        const contentEl = el.querySelector('.contentRow-snippet, .alert-body, p');
+        const content = contentEl?.textContent?.trim() || text.substring(0, 500);
+
+        // Extract timestamp
+        const timeEl = el.querySelector('time, .dateTime');
+        const timestamp = timeEl?.textContent?.trim() || timeEl?.getAttribute('title') || '';
+
+        // Try to find quoted text
+        let quotedText = '';
+        const quoteEl = el.querySelector('blockquote, .quote, [class*="quote"]');
+        if (quoteEl) {
+          quotedText = quoteEl.textContent?.trim() || '';
+        }
+
+        if (author && (threadTitle || content)) {
+          alertItems.push({
+            id: `alert-${idx}-${Date.now()}`,
+            type,
+            author,
+            threadTitle: threadTitle || 'Unknown Thread',
+            threadUrl,
+            content: content.substring(0, 1000),
+            quotedText: quotedText.substring(0, 500),
+            timestamp
+          });
+        }
+      });
+
+      return alertItems;
+    });
+
+    await browser.close();
+    browser = null;
+
+    console.log(`Found ${alerts.length} alerts`);
+
+    return res.json({
+      success: true,
+      alertCount: alerts.length,
+      alerts: alerts.slice(0, 50) // Limit to 50 most recent
+    });
+
+  } catch (error) {
+    console.error('On3 alerts scrape error:', error);
+    if (browser) await browser.close();
+    return res.status(500).json({
+      error: 'Failed to scrape On3 alerts',
+      details: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`LRCC Scraper running on port ${PORT}`);
 });
