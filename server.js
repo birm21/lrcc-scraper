@@ -928,9 +928,27 @@ app.get('/scrape-on3-alerts', async (req, res) => {
           const hash = window.location.hash;
           if (hash && hash.includes('post-')) {
             const postId = hash.replace('#', '');
-            postEl = document.getElementById(postId);
-            if (postEl) {
-              debug.foundMethod = 'hash id: ' + postId;
+            const anchorEl = document.getElementById(postId);
+            if (anchorEl) {
+              // The anchor is usually a span, find the actual article nearby
+              // Try: parent article, next sibling article, or closest article
+              postEl = anchorEl.closest('article[data-author], article.message, .message--post');
+              if (!postEl) {
+                // Try looking at the next sibling
+                postEl = anchorEl.nextElementSibling;
+                if (postEl && !postEl.matches('article, .message--post')) {
+                  postEl = postEl.closest('article[data-author], article.message, .message--post');
+                }
+              }
+              if (!postEl) {
+                // Try parent's article
+                postEl = anchorEl.parentElement?.closest('article[data-author], article.message, .message--post');
+              }
+              if (postEl) {
+                debug.foundMethod = 'hash anchor -> article: ' + postId;
+              } else {
+                debug.foundMethod = 'hash anchor found but no article: ' + postId;
+              }
             }
           }
 
