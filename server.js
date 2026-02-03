@@ -92,7 +92,7 @@ app.get('/scrape-247', async (req, res) => {
     ];
 
     // Click load more buttons multiple times
-    for (let attempt = 0; attempt < 20; attempt++) {
+    for (let attempt = 0; attempt < 15; attempt++) {
       const clicked = await page.evaluate(() => {
         // Look for any clickable element with "load more", "show more", "view more"
         const buttons = Array.from(document.querySelectorAll('button, a, div[onclick]'));
@@ -280,7 +280,7 @@ app.get('/scrape-247', async (req, res) => {
         }
 
         // Get profile URL
-        const href = link.getAttribute('href');
+        const href = nameLink.getAttribute('href');
         let profileUrl = null;
         if (href) {
           profileUrl = href.startsWith('http') ? href : `https:${href.startsWith('//') ? '' : '//247sports.com'}${href}`;
@@ -370,45 +370,18 @@ app.get('/scrape-247', async (req, res) => {
   }
 });
 
-// Helper function to scroll page and trigger lazy loading
+// Helper function to scroll page - simplified to save memory
 async function autoScroll(page) {
-  console.log('Starting scroll sequence...');
+  console.log('Starting scroll...');
 
-  // Method 1: Gradual scroll with mouse wheel simulation
-  for (let i = 0; i < 50; i++) {
-    await page.evaluate((iteration) => {
-      window.scrollBy(0, 800);
-    }, i);
-    await new Promise(resolve => setTimeout(resolve, 300));
-
-    // Every 10 scrolls, wait longer for content
-    if (i % 10 === 9) {
-      console.log(`Scroll iteration ${i + 1}, waiting for content...`);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
+  // Simple scroll to bottom and back
+  for (let i = 0; i < 10; i++) {
+    await page.evaluate(() => window.scrollBy(0, 1000));
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 
-  // Method 2: Jump to specific positions to trigger loading
-  const positions = [0.25, 0.5, 0.75, 1.0];
-  for (const pos of positions) {
-    await page.evaluate((position) => {
-      window.scrollTo(0, document.body.scrollHeight * position);
-    }, pos);
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    console.log(`Jumped to ${pos * 100}% of page`);
-  }
-
-  // Method 3: Scroll back up slowly (some sites load on scroll up too)
-  for (let i = 0; i < 20; i++) {
-    await page.evaluate(() => {
-      window.scrollBy(0, -500);
-    });
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
-
-  // Final scroll to top
   await page.evaluate(() => window.scrollTo(0, 0));
-  console.log('Scroll sequence complete');
+  console.log('Scroll complete');
 }
 
 app.listen(PORT, () => {
