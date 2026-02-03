@@ -752,16 +752,32 @@ app.get('/scrape-on3-alerts', async (req, res) => {
         }
 
         // Find post URL - try multiple strategies and log each step
+        // PRIORITY: /threads/ URLs with #post- hashes work best for content extraction
         let postUrl = '';
 
-        // Strategy 1: Check for data-href on the alert element itself
-        const dataHref = alertEl.getAttribute('data-href') || alertEl.getAttribute('href');
-        if (dataHref) {
-          postUrl = dataHref;
-          alertDebug.urlSelectionSteps.push({ step: 'data-href on element', url: dataHref });
+        // Strategy 1: Look for /threads/ links WITH post anchor (most reliable)
+        const threadLinks = alertEl.querySelectorAll('a[href*="/threads/"]');
+        threadLinks.forEach(link => {
+          const href = link.href || '';
+          // Prefer links with post anchors like #post-12345
+          if (href.includes('#post-')) {
+            if (!postUrl) {
+              postUrl = href;
+              alertDebug.urlSelectionSteps.push({ step: 'thread link with #post- anchor', url: href });
+            }
+          }
+        });
+
+        // Strategy 2: Check for data-href on the alert element itself
+        if (!postUrl) {
+          const dataHref = alertEl.getAttribute('data-href') || alertEl.getAttribute('href');
+          if (dataHref) {
+            postUrl = dataHref;
+            alertDebug.urlSelectionSteps.push({ step: 'data-href on element', url: dataHref });
+          }
         }
 
-        // Strategy 2: Look for links containing /posts/ (specific post link)
+        // Strategy 3: Look for links containing /posts/ (less reliable but specific)
         if (!postUrl) {
           const postsLink = alertEl.querySelector('a[href*="/posts/"]');
           if (postsLink) {
@@ -770,24 +786,10 @@ app.get('/scrape-on3-alerts', async (req, res) => {
           }
         }
 
-        // Strategy 3: Look for links containing /threads/ with post anchor
-        if (!postUrl) {
-          const threadLinks = alertEl.querySelectorAll('a[href*="/threads/"]');
-          threadLinks.forEach(link => {
-            const href = link.href || '';
-            // Prefer links with post anchors like #post-12345
-            if (href.includes('#post-') || href.includes('post-')) {
-              if (!postUrl) {
-                postUrl = href;
-                alertDebug.urlSelectionSteps.push({ step: 'thread link with post anchor', url: href });
-              }
-            }
-          });
-          // If no anchored link, use first thread link
-          if (!postUrl && threadLinks.length > 0) {
-            postUrl = threadLinks[0].href;
-            alertDebug.urlSelectionSteps.push({ step: 'first thread link (no anchor)', url: threadLinks[0].href });
-          }
+        // Strategy 4: Any /threads/ link (without anchor)
+        if (!postUrl && threadLinks.length > 0) {
+          postUrl = threadLinks[0].href;
+          alertDebug.urlSelectionSteps.push({ step: 'first thread link (no anchor)', url: threadLinks[0].href });
         }
 
         // Strategy 4: contentRow-main or contentRow-title link
