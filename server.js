@@ -133,82 +133,142 @@ app.get('/scrape-247', async (req, res) => {
     const finalCount = await page.evaluate(() => document.querySelectorAll('a[href*="/Player/"]').length);
     console.log(`Final player links found: ${finalCount}`);
 
+    // First, let's capture page structure for debugging
+    const debugInfo = await page.evaluate(() => {
+      const firstPlayer = document.querySelector('a[href*="/Player/"]');
+      if (firstPlayer) {
+        let container = firstPlayer.closest('li') || firstPlayer.closest('tr') || firstPlayer.closest('[class*="player"]') || firstPlayer.closest('[class*="recruit"]');
+        if (!container) container = firstPlayer.parentElement?.parentElement?.parentElement?.parentElement?.parentElement;
+        return {
+          containerClasses: container?.className || 'no class',
+          containerHTML: container?.innerHTML?.substring(0, 2000) || 'no html',
+          containerText: container?.textContent?.substring(0, 500) || 'no text'
+        };
+      }
+      return { error: 'no player found' };
+    });
+    console.log('DEBUG - First player container:', JSON.stringify(debugInfo, null, 2));
+
     // Extract player data
     console.log('Extracting player data...');
     const offers = await page.evaluate(() => {
       const players = [];
       const seenNames = new Set();
 
-      // Find all player links
-      const playerLinks = document.querySelectorAll('a[href*="/Player/"]');
+      // Find all player list items - 247 uses specific containers
+      // Try multiple selectors
+      let playerContainers = document.querySelectorAll('.ri-page__list-item, .recruit-list__item, [class*="recruit-item"], li[class*="player"]');
 
-      playerLinks.forEach(link => {
-        const name = link.textContent.trim();
+      // Fallback to finding links and going up
+      if (playerContainers.length === 0) {
+        const playerLinks = document.querySelectorAll('a[href*="/Player/"]');
+        const containers = new Set();
+        playerLinks.forEach(link => {
+          let container = link.closest('li') || link.closest('[class*="recruit"]') || link.closest('[class*="list-item"]');
+          if (!container) container = link.parentElement?.parentElement?.parentElement?.parentElement;
+          if (container) containers.add(container);
+        });
+        playerContainers = Array.from(containers);
+      }
+
+      playerContainers.forEach((container, idx) => {
+        // Find player name link
+        const nameLink = container.querySelector('a[href*="/Player/"]');
+        if (!nameLink) return;
+
+        const name = nameLink.textContent.trim();
         if (!name || name.length < 3 || seenNames.has(name.toLowerCase())) return;
         if (name.includes('Player') || name.includes('View') || name.includes('More')) return;
 
-        // Get the parent row/container
-        let container = link.closest('li') || link.closest('tr') || link.closest('[class*="player"]');
-        if (!container) {
-          container = link.parentElement?.parentElement?.parentElement;
-        }
-        if (!container) return;
-
         const containerText = container.textContent || '';
-        const containerHtml = container.innerHTML || '';
 
-        // Extract position - look for position badges/text
+        // Extract position - look for position in specific elements first
         let position = '';
-        const posPatterns = [
-          /\b(QB|RB|WR|TE|OL|OT|IOL|DL|DT|DE|EDGE|Edge|LB|CB|S|SAF|ATH|K|P|LS)\b/i
-        ];
-        for (const pat of posPatterns) {
-          const posMatch = containerText.match(pat);
-          if (posMatch) {
-            position = posMatch[1].toUpperCase();
-            if (position === 'EDGE') position = 'EDGE';
-            break;
-          }
+        const posElement = container.querySelector('.position, [class*="position"], .pos');
+        if (posElement) {
+          position = posElement.textContent.trim().toUpperCase();
+        } else {
+          const posPatterns = /\b(QB|RB|WR|TE|OL|OT|IOL|DL|DT|DE|EDGE|LB|CB|S|SAF|ATH|K|P|LS)\b/i;
+          const posMatch = containerText.match(posPatterns);
+          if (posMatch) position = posMatch[1].toUpperCase();
         }
 
-        // Extract school and location - pattern: "School Name (City, ST)"
+        // Extract location - look for specific pattern with parentheses
         let highSchool = '';
         let city = '';
         let state = '';
-        const locMatch = containerText.match(/([A-Za-z\s.'\-]+)\s*\(([^,]+),\s*([A-Z]{2})\)/);
+        // Pattern: "School Name (City, ST)" - be more careful to not include player name
+        const schoolElement = container.querySelector('.meta, [class*="school"], [class*="location"]');
+        const searchText = schoolElement ? schoolElement.textContent : containerText;
+
+        // Look for pattern AFTER the player name
+        const nameIndex = searchText.indexOf(name);
+        const textAfterName = nameIndex >= 0 ? searchText.substring(nameIndex + name.length) : searchText;
+
+        const locMatch = textAfterName.match(/([A-Za-z\s.'&\-]+?)\s*\(([^,]+),\s*([A-Z]{2})\)/);
         if (locMatch) {
           highSchool = locMatch[1].trim();
           city = locMatch[2].trim();
           state = locMatch[3].trim();
         }
 
-        // Extract rating - two digit number that's a rating (70-100)
+        // Extract rating - look for score/rating elements first
         let rating = null;
-        // Look for rating patterns - typically displayed as just the number
-        const ratingMatches = containerText.match(/\b(\d{2})\b/g);
-        if (ratingMatches) {
-          for (const r of ratingMatches) {
-            const num = parseInt(r);
-            if (num >= 70 && num <= 99) {
-              rating = num;
-              break;
-            }
+        const scoreElement = container.querySelector('.score, .rating, [class*="score"], [class*="rating"]');
+        if (scoreElement) {
+          const scoreText = scoreElement.textContent.trim();
+          const scoreMatch = scoreText.match(/(\d{2,3})/);
+          if (scoreMatch) {
+            const num = parseInt(scoreMatch[1]);
+            if (num >= 70 && num <= 100) rating = num;
           }
         }
 
-        // Extract rankings - "Natl X" or "Nat X", "Pos X", "St X"
+        // Fallback: look for rating in specific context
+        if (!rating) {
+          // Look for numbers near "Rating" text
+          const ratingContextMatch = containerText.match(/(?:rating|score)[:\s]*(\d{2})/i);
+          if (ratingContextMatch) {
+            const num = parseInt(ratingContextMatch[1]);
+            if (num >= 70 && num <= 100) rating = num;
+          }
+        }
+
+        // Extract rankings from specific rank elements or text
         let nationalRank = null;
         let positionRank = null;
         let stateRank = null;
 
-        const natMatch = containerText.match(/Nat(?:l|ional)?\s*(\d+)/i);
-        if (natMatch) nationalRank = parseInt(natMatch[1]);
+        // Look for rank elements
+        const rankElements = container.querySelectorAll('[class*="rank"], .rankings span, .meta span');
+        rankElements.forEach(el => {
+          const text = el.textContent.toLowerCase();
+          const numMatch = el.textContent.match(/(\d+)/);
+          if (numMatch) {
+            const num = parseInt(numMatch[1]);
+            if (text.includes('natl') || text.includes('national') || text.includes('nat ')) {
+              nationalRank = num;
+            } else if (text.includes('pos') || text.includes('position')) {
+              positionRank = num;
+            } else if (text.includes('st ') || text.includes('state')) {
+              stateRank = num;
+            }
+          }
+        });
 
-        const posRankMatch = containerText.match(/Pos\s*(\d+)/i);
-        if (posRankMatch) positionRank = parseInt(posRankMatch[1]);
-
-        const stMatch = containerText.match(/\bSt\s*(\d+)/i);
-        if (stMatch) stateRank = parseInt(stMatch[1]);
+        // Fallback: regex on container text
+        if (!nationalRank) {
+          const natMatch = containerText.match(/Nat(?:l|ional)?[:\s#]*(\d+)/i);
+          if (natMatch) nationalRank = parseInt(natMatch[1]);
+        }
+        if (!positionRank) {
+          const posRankMatch = containerText.match(/Pos(?:ition)?[:\s#]*(\d+)/i);
+          if (posRankMatch) positionRank = parseInt(posRankMatch[1]);
+        }
+        if (!stateRank) {
+          const stMatch = containerText.match(/(?:State|St)[:\s#]*(\d+)/i);
+          if (stMatch) stateRank = parseInt(stMatch[1]);
+        }
 
         // Extract height/weight - "6-5 / 225" format
         let height = null;
