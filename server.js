@@ -900,86 +900,133 @@ app.get('/scrape-on3-alerts', async (req, res) => {
           const debug = {
             pageTitle: document.title,
             currentUrl: window.location.href,
-            selectorsFound: {}
+            selectorsFound: {},
+            bodyPreview: document.body?.innerHTML?.substring(0, 500) || 'no body'
           };
 
-          // Check what selectors match
+          // Check what selectors match - expanded list for On3
           debug.selectorsFound = {
             'message--post': document.querySelectorAll('.message--post').length,
-            'message--post.is-highlighted': document.querySelectorAll('.message--post.is-highlighted').length,
-            'bbWrapper': document.querySelectorAll('.bbWrapper').length,
-            'message-body': document.querySelectorAll('.message-body').length,
-            'message-content': document.querySelectorAll('.message-content').length,
+            'article.message': document.querySelectorAll('article.message').length,
+            'article[data-author]': document.querySelectorAll('article[data-author]').length,
+            '.message-inner': document.querySelectorAll('.message-inner').length,
+            '.message-cell--main': document.querySelectorAll('.message-cell--main').length,
+            '.bbWrapper': document.querySelectorAll('.bbWrapper').length,
+            '.message-body': document.querySelectorAll('.message-body').length,
+            '.message-content': document.querySelectorAll('.message-content').length,
             '[id^="post-"]': document.querySelectorAll('[id^="post-"]').length,
+            '[id^="js-post-"]': document.querySelectorAll('[id^="js-post-"]').length,
             'blockquote': document.querySelectorAll('blockquote').length,
-            '.bbCodeBlock--quote': document.querySelectorAll('.bbCodeBlock--quote').length
+            '.bbCodeBlock--quote': document.querySelectorAll('.bbCodeBlock--quote').length,
+            '.js-post': document.querySelectorAll('.js-post').length
           };
 
-          // Try to find the highlighted/target post (usually has a class indicating it's the target)
-          let postEl = document.querySelector('.message--post[style*="background"], .message--post.is-highlighted, [id^="post-"].target');
+          // Try to find the target post - check for URL-based targeting first
+          let postEl = null;
 
-          // If URL has hash, try to find that specific post
+          // Strategy 1: If URL has hash like #post-12345, find that post
           const hash = window.location.hash;
-          if (hash && hash.startsWith('#post-')) {
+          if (hash && hash.includes('post-')) {
             const postId = hash.replace('#', '');
-            const targetPost = document.getElementById(postId);
-            if (targetPost) {
-              postEl = targetPost;
-              debug.foundByHash = postId;
+            postEl = document.getElementById(postId);
+            if (postEl) {
+              debug.foundMethod = 'hash id: ' + postId;
             }
           }
 
-          // Fallback: find the last post on the page
+          // Strategy 2: Look for highlighted/targeted post
           if (!postEl) {
-            const allPosts = document.querySelectorAll('.message--post, article[class*="message"]');
-            if (allPosts.length > 0) {
-              postEl = allPosts[allPosts.length - 1];
-              debug.usedFallback = 'last post on page';
+            postEl = document.querySelector('.message--post.is-highlighted, article.message.is-highlighted, [data-highlight="true"]');
+            if (postEl) debug.foundMethod = 'highlighted class';
+          }
+
+          // Strategy 3: On3/XenForo specific - article with data-author
+          if (!postEl) {
+            const articles = document.querySelectorAll('article[data-author], article.message');
+            if (articles.length === 1) {
+              postEl = articles[0];
+              debug.foundMethod = 'single article on page';
+            } else if (articles.length > 1) {
+              // For /posts/ URLs, On3 usually shows only the target post or highlights it
+              // Look for one with special styling or use the first one
+              postEl = articles[0];
+              debug.foundMethod = 'first of ' + articles.length + ' articles';
             }
           }
 
-          // Another fallback: first bbWrapper
+          // Strategy 4: Fallback to any post container
           if (!postEl) {
-            postEl = document.querySelector('.bbWrapper, .message-content');
-            debug.usedFallback = 'first bbWrapper/message-content';
+            postEl = document.querySelector('.message--post, .js-post, [id^="post-"], [id^="js-post-"]');
+            if (postEl) debug.foundMethod = 'generic post selector';
           }
 
           debug.postElFound = !!postEl;
-          debug.postElClass = postEl?.className || 'none';
+          debug.postElTag = postEl?.tagName || 'none';
+          debug.postElClass = postEl?.className?.substring(0, 100) || 'none';
           debug.postElId = postEl?.id || 'none';
+          debug.postElDataAuthor = postEl?.getAttribute('data-author') || 'none';
 
-          // Get the message content
+          // Get the message content - try multiple selectors
           let content = '';
-          const contentEl = postEl?.querySelector('.bbWrapper, .message-body, .message-content');
+          let contentEl = null;
+
+          // Look for content container inside the post
+          const contentSelectors = [
+            '.message-body .bbWrapper',
+            '.message-content .bbWrapper',
+            '.bbWrapper',
+            '.message-body',
+            '.message-content',
+            '.message-cell--main',
+            '.message-inner'
+          ];
+
+          for (const sel of contentSelectors) {
+            contentEl = postEl?.querySelector(sel);
+            if (contentEl && contentEl.textContent?.trim()) {
+              debug.contentSelector = sel;
+              break;
+            }
+          }
+
           if (contentEl) {
-            content = contentEl.textContent?.trim() || '';
-            debug.contentSource = 'inner content element';
+            // Clone the element to manipulate without affecting the page
+            const clone = contentEl.cloneNode(true);
+
+            // Remove quote blocks from the clone to get just the reply text
+            const quotes = clone.querySelectorAll('blockquote, .bbCodeBlock--quote, .quote');
+            quotes.forEach(q => q.remove());
+
+            content = clone.textContent?.trim() || '';
+            debug.contentSource = 'content element (quotes removed)';
           } else if (postEl) {
             content = postEl.textContent?.trim() || '';
             debug.contentSource = 'postEl directly';
           }
 
           debug.contentLength = content.length;
-          debug.contentPreview = content.substring(0, 100);
+          debug.contentPreview = content.substring(0, 200);
 
-          // Try to find what was quoted (if this is a quote response)
+          // Also capture quoted text separately if present
           let quotedText = '';
-          const quoteBlock = postEl?.querySelector('blockquote, .quote, [class*="bbCodeBlock--quote"]');
+          const quoteBlock = postEl?.querySelector('blockquote .bbWrapper, .bbCodeBlock--quote .bbWrapper, blockquote, .bbCodeBlock--quote');
           if (quoteBlock) {
             quotedText = quoteBlock.textContent?.trim() || '';
-            // Remove the quoted text from main content to avoid duplication
-            content = content.replace(quotedText, '').trim();
             debug.foundQuote = true;
-            debug.quoteLength = quotedText.length;
+            debug.quotePreview = quotedText.substring(0, 100);
           }
 
           // Get thread title from page
-          const threadTitle = document.querySelector('h1, .p-title-value, [class*="thread-title"]')?.textContent?.trim() || '';
+          const threadTitle = document.querySelector('h1.p-title-value, .p-title-value, h1')?.textContent?.trim() || '';
 
           // Get the post author from this specific post
-          const authorEl = postEl?.querySelector('.message-userDetails a, .username, [class*="author"]')
-                        || document.querySelector('.message-userDetails a, .username');
-          const postAuthor = authorEl?.textContent?.trim() || '';
+          const authorEl = postEl?.querySelector('a.username, .message-name a, [data-author]')
+                        || postEl?.closest('[data-author]');
+          let postAuthor = '';
+          if (authorEl) {
+            postAuthor = authorEl.getAttribute('data-author') || authorEl.textContent?.trim() || '';
+          }
+          debug.authorFound = postAuthor;
 
           console.log('POST EXTRACTION DEBUG:', JSON.stringify(debug, null, 2));
 
@@ -989,21 +1036,27 @@ app.get('/scrape-on3-alerts', async (req, res) => {
             threadTitle,
             postAuthor,
             pageUrl: window.location.href,
-            debug // Include debug info in response
+            debug
           };
         });
 
         console.log(`  Content extracted: ${postData.content?.length || 0} chars, quote: ${postData.quotedText?.length || 0} chars`);
 
+        // Clean up author - remove whitespace/newlines from avatar elements
+        let cleanAuthor = (alert.author || postData.postAuthor || '').replace(/[\n\t\r]+/g, ' ').replace(/\s+/g, ' ').trim();
+        // Remove single letter prefixes (avatar initials) if present
+        cleanAuthor = cleanAuthor.replace(/^[A-Z]\s+/, '');
+
         alerts.push({
           id: `alert-${alert.idx}-${Date.now()}`,
           type: alert.type,
-          author: alert.author || postData.postAuthor,
+          author: cleanAuthor,
           threadTitle: postData.threadTitle || alert.threadTitle || 'Unknown Thread',
           threadUrl: postData.pageUrl || alert.postUrl,
           content: postData.content || alert.alertText,
           quotedText: postData.quotedText,
-          timestamp: alert.timestamp
+          timestamp: alert.timestamp,
+          _debug: postData.debug // Include debug info temporarily
         });
 
       } catch (err) {
