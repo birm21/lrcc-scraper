@@ -388,8 +388,216 @@ async function autoScroll(page) {
   console.log('Scroll complete');
 }
 
-// On3 Alerts Scraper - Requires authentication
+// On3 Alerts Scraper - FAST version (no individual post navigation)
 app.get('/scrape-on3-alerts', async (req, res) => {
+  const on3Username = process.env.ON3_USERNAME;
+  const on3Password = process.env.ON3_PASSWORD;
+
+  if (!on3Username || !on3Password) {
+    return res.status(500).json({
+      error: 'On3 credentials not configured',
+      details: 'ON3_USERNAME and ON3_PASSWORD environment variables must be set'
+    });
+  }
+
+  let browser = null;
+
+  try {
+    console.log('Starting On3 alerts scrape (fast mode)...');
+    const startTime = Date.now();
+
+    // Launch browser with stealth settings
+    const executablePath = await chromium.executablePath();
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled'
+      ],
+      defaultViewport: { width: 1920, height: 1080 },
+      executablePath: executablePath,
+      headless: 'new'
+    });
+
+    const page = await browser.newPage();
+
+    // Set extra headers
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    });
+
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+
+    // Override webdriver detection
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+
+    // Login
+    console.log('Navigating to login...');
+    await page.goto('https://www.on3.com/teams/ohio-state-buckeyes/login/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Find and fill login form
+    const loginInput = await page.$('input[name="login"], input[name="email"], input[type="email"]');
+    const passwordInput = await page.$('input[name="password"], input[type="password"]');
+
+    if (!loginInput || !passwordInput) {
+      throw new Error('Could not find login form');
+    }
+
+    await loginInput.type(on3Username, { delay: 30 });
+    await passwordInput.type(on3Password, { delay: 30 });
+
+    const submitButton = await page.$('button[type="submit"]');
+    if (submitButton) {
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {}),
+        submitButton.click()
+      ]);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log(`Login complete. Time: ${(Date.now() - startTime) / 1000}s`);
+
+    // Go to alerts page
+    console.log('Navigating to alerts...');
+    await page.goto('https://www.on3.com/boards/account/alerts', {
+      waitUntil: 'domcontentloaded',
+      timeout: 20000
+    });
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    console.log(`Alerts page loaded. Time: ${(Date.now() - startTime) / 1000}s`);
+
+    // Extract alerts directly from the list - NO navigation to individual posts
+    const alerts = await page.evaluate(() => {
+      const items = [];
+      const seenKeys = new Set();
+
+      // Find all alert elements
+      const alertElements = document.querySelectorAll('li.alert, li.js-alert, li.block-row');
+
+      alertElements.forEach((el, idx) => {
+        if (items.length >= 15) return; // Limit to 15 alerts
+
+        const text = el.textContent?.trim() || '';
+        if (!text || text.length < 20) return;
+
+        // Skip likes/reactions - only process quotes and mentions
+        if (text.toLowerCase().includes('reacted') || text.toLowerCase().includes('with like')) {
+          return;
+        }
+
+        // Must contain quoted or mentioned
+        if (!text.toLowerCase().includes('quoted') && !text.toLowerCase().includes('mentioned')) return;
+
+        const type = text.toLowerCase().includes('mentioned') ? 'mention' : 'quote';
+
+        // Extract author - first part before "quoted" or "mentioned"
+        let author = 'Unknown';
+        const authorMatch = text.match(/^([A-Za-z0-9_\s]+?)\s+(quoted|mentioned)/i);
+        if (authorMatch) {
+          author = authorMatch[1].trim();
+          // Clean up avatar initials
+          author = author.replace(/^[A-Za-z0-9]\s+/, '');
+        }
+
+        // Extract thread title - after "in the thread"
+        let threadTitle = 'Unknown Thread';
+        const threadMatch = text.match(/in the thread\s+(?:Football\s+|Basketball\s+|Baseball\s+|Recruiting\s+|Other\s+)?(.+?)(?:\.\s*$|\.\s*\d+|\s+\d+\s+\w+\s+ago|Today|Yesterday)/is);
+        if (threadMatch) {
+          threadTitle = threadMatch[1].trim().replace(/\.$/, '');
+        }
+
+        // Get the post URL - prioritize /threads/ links with #post- anchors
+        let postUrl = '';
+
+        // First try /threads/ links with post anchors
+        const threadLinks = el.querySelectorAll('a[href*="/threads/"]');
+        for (const link of threadLinks) {
+          if (link.href.includes('#post-')) {
+            postUrl = link.href;
+            break;
+          }
+        }
+
+        // Fallback to any thread link
+        if (!postUrl && threadLinks.length > 0) {
+          postUrl = threadLinks[0].href;
+        }
+
+        // Fallback to data-href
+        if (!postUrl) {
+          postUrl = el.getAttribute('data-href') || '';
+        }
+
+        // Fallback to any non-member link
+        if (!postUrl) {
+          const anyLink = el.querySelector('a[href]:not([href*="/members/"])');
+          if (anyLink) postUrl = anyLink.href;
+        }
+
+        // Extract timestamp
+        const timeEl = el.querySelector('time, .DateTime, [class*="time"]');
+        let timestamp = timeEl?.textContent?.trim() || timeEl?.getAttribute('datetime') || '';
+        if (!timestamp) {
+          const timeMatch = text.match(/(\d+\s+(?:minute|hour|day)s?\s+ago|Today at \d+:\d+|Yesterday at \d+:\d+)/i);
+          if (timeMatch) timestamp = timeMatch[1];
+        }
+
+        // Create unique key to avoid duplicates
+        const alertKey = `${author}-${threadTitle.substring(0, 30)}`;
+        if (seenKeys.has(alertKey)) return;
+        seenKeys.add(alertKey);
+
+        items.push({
+          id: `alert-${idx}-${Date.now()}`,
+          type,
+          author,
+          threadTitle,
+          threadUrl: postUrl,
+          content: text.substring(0, 500), // Use alert text as content
+          quotedText: '', // Not available without navigating
+          timestamp
+        });
+      });
+
+      return items;
+    });
+
+    await browser.close();
+    browser = null;
+
+    const totalTime = (Date.now() - startTime) / 1000;
+    console.log(`Successfully extracted ${alerts.length} alerts in ${totalTime}s`);
+
+    return res.json({
+      success: true,
+      alertCount: alerts.length,
+      alerts: alerts,
+      processingTime: `${totalTime}s`
+    });
+
+  } catch (error) {
+    console.error('On3 alerts scrape error:', error);
+    if (browser) await browser.close();
+    return res.status(500).json({
+      error: 'Failed to scrape On3 alerts',
+      details: error.message
+    });
+  }
+});
+
+// On3 Alerts Scraper - FULL version (navigates to each post for full content)
+app.get('/scrape-on3-alerts-full', async (req, res) => {
   // Check for On3 credentials
   const on3Username = process.env.ON3_USERNAME;
   const on3Password = process.env.ON3_PASSWORD;
