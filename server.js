@@ -10,6 +10,34 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Shared low-memory Chromium launch args
+const LOW_MEMORY_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--single-process',
+  '--disable-extensions',
+  '--disable-background-networking',
+  '--disable-default-apps',
+  '--disable-sync',
+  '--disable-translate',
+  '--no-first-run',
+  '--disable-background-timer-throttling',
+  '--js-flags=--max-old-space-size=256'
+];
+
+// Shared browser launch helper
+async function launchBrowser(viewport = { width: 1280, height: 720 }) {
+  const executablePath = await chromium.executablePath();
+  return puppeteer.launch({
+    args: [...chromium.args, ...LOW_MEMORY_ARGS],
+    defaultViewport: viewport,
+    executablePath,
+    headless: 'new'
+  });
+}
+
 // CORS - allow your Vercel app
 app.use(cors({
   origin: [
@@ -47,23 +75,7 @@ app.get('/scrape-247', async (req, res) => {
   try {
     console.log(`Starting scrape for ${classYear}...`);
 
-    // Launch browser with @sparticuz/chromium
-    const executablePath = await chromium.executablePath();
-    console.log('Chromium executable path:', executablePath);
-
-    browser = await puppeteer.launch({
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process'
-      ],
-      defaultViewport: { width: 1920, height: 1080 },
-      executablePath: executablePath,
-      headless: true
-    });
+    browser = await launchBrowser();
 
     const page = await browser.newPage();
 
@@ -95,8 +107,8 @@ app.get('/scrape-247', async (req, res) => {
       'a[class*="next"]'
     ];
 
-    // Click load more buttons multiple times
-    for (let attempt = 0; attempt < 15; attempt++) {
+    // Click load more buttons multiple times (reduced from 15 to 8 to save memory)
+    for (let attempt = 0; attempt < 8; attempt++) {
       const clicked = await page.evaluate(() => {
         // Look for any clickable element with "load more", "show more", "view more"
         const buttons = Array.from(document.querySelectorAll('button, a, div[onclick]'));
@@ -378,9 +390,9 @@ app.get('/scrape-247', async (req, res) => {
 async function autoScroll(page) {
   console.log('Starting scroll...');
 
-  // Simple scroll to bottom and back
-  for (let i = 0; i < 10; i++) {
-    await page.evaluate(() => window.scrollBy(0, 1000));
+  // Simple scroll to bottom and back (reduced from 10 to 5 to save memory)
+  for (let i = 0; i < 5; i++) {
+    await page.evaluate(() => window.scrollBy(0, 2000));
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 
@@ -406,21 +418,7 @@ app.get('/scrape-on3-alerts', async (req, res) => {
     console.log('Starting On3 alerts scrape (fast mode)...');
     const startTime = Date.now();
 
-    // Launch browser with stealth settings
-    const executablePath = await chromium.executablePath();
-    browser = await puppeteer.launch({
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-blink-features=AutomationControlled'
-      ],
-      defaultViewport: { width: 1920, height: 1080 },
-      executablePath: executablePath,
-      headless: 'new'
-    });
+    browser = await launchBrowser();
 
     const page = await browser.newPage();
 
@@ -614,24 +612,7 @@ app.get('/scrape-on3-alerts-full', async (req, res) => {
   try {
     console.log('Starting On3 alerts scrape...');
 
-    // Launch browser with stealth settings
-    const executablePath = await chromium.executablePath();
-    console.log('Chromium executable path:', executablePath);
-
-    browser = await puppeteer.launch({
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-blink-features=AutomationControlled',
-        '--window-size=1920,1080'
-      ],
-      defaultViewport: { width: 1920, height: 1080 },
-      executablePath: executablePath,
-      headless: 'new'
-    });
+    browser = await launchBrowser();
 
     const page = await browser.newPage();
 
@@ -1120,8 +1101,8 @@ app.get('/scrape-on3-alerts-full', async (req, res) => {
     console.log(`Found ${alertList.length} relevant alerts (mentions/quotes only)`);
 
     // Second pass: Visit each alert's post to get actual content
-    // Limit to 10 to get more alerts while avoiding timeout
-    const alertsToProcess = alertList.slice(0, 10);
+    // Limit to 5 to avoid memory issues on Render free tier
+    const alertsToProcess = alertList.slice(0, 5);
     const alerts = [];
 
     for (let i = 0; i < alertsToProcess.length; i++) {
@@ -1455,13 +1436,7 @@ app.get('/debug-on3-alerts', async (req, res) => {
   let browser = null;
 
   try {
-    const executablePath = await chromium.executablePath();
-    browser = await puppeteer.launch({
-      args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
-      defaultViewport: { width: 1920, height: 1080 },
-      executablePath: executablePath,
-      headless: true
-    });
+    browser = await launchBrowser();
 
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
